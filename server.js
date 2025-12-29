@@ -10,6 +10,7 @@ const PI_API_KEY = "rirfrpwufllqrsfglgjirmzlupczahsigogivq5zv7rupau0cnplf3q8vpkx
 
 app.post("/approve-payment", async (req, res) => {
   const { paymentId } = req.body;
+  if(!paymentId) return res.status(400).json({ error: "paymentId missing" });
 
   try {
     const r = await fetch(
@@ -17,9 +18,10 @@ app.post("/approve-payment", async (req, res) => {
       {
         method: "POST",
         headers: {
-          Authorization: `Key ${PI_API_KEY}`,
+          Authorization: `Bearer ${PI_API_KEY}`,
           "Content-Type": "application/json"
-        }
+        },
+        body: JSON.stringify({})
       }
     );
     const data = await r.json();
