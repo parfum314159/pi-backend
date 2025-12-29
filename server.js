@@ -6,10 +6,16 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 🔑 Server API Key (يجب أن يكون Server Key وليس Client)
-const PI_API_KEY = "rirfrpwufllqrsfglgjirmzlupczahsigogivq5zv7rupau0cnplf3q8vpkx2bij";
+// 🔑 Pi Server API Key من Environment Variable
+const PI_API_KEY = process.env.PI_API_KEY;
 
-// ✅ Route اختبار
+// حماية إضافية
+if (!PI_API_KEY) {
+  console.error("❌ PI_API_KEY is missing");
+  process.exit(1);
+}
+
+// Route اختبار
 app.get("/", (req, res) => {
   res.send("Pi-backend is running ✅");
 });
@@ -28,10 +34,9 @@ app.post("/approve-payment", async (req, res) => {
       {
         method: "POST",
         headers: {
-          Authorization: `Key ${PI_API_KEY}`,
+          Authorization: `Bearer ${PI_API_KEY}`,
           "Content-Type": "application/json"
-        },
-        body: JSON.stringify({})
+        }
       }
     );
 
@@ -43,7 +48,7 @@ app.post("/approve-payment", async (req, res) => {
   }
 });
 
-// ================== COMPLETE PAYMENT (الأهم) ==================
+// ================== COMPLETE PAYMENT ==================
 app.post("/complete-payment", async (req, res) => {
   const { paymentId } = req.body;
 
@@ -57,10 +62,9 @@ app.post("/complete-payment", async (req, res) => {
       {
         method: "POST",
         headers: {
-          Authorization: `Key ${PI_API_KEY}`,
+          Authorization: `Bearer ${PI_API_KEY}`,
           "Content-Type": "application/json"
-        },
-        body: JSON.stringify({})
+        }
       }
     );
 
