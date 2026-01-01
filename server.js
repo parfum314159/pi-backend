@@ -34,14 +34,18 @@ app.post("/approve-payment", async (req, res) => {
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${PI_API_KEY}`,
+          Authorization: `Key ${PI_API_KEY}`,  // ← تغيير هنا: Key بدلاً من Bearer
           "Content-Type": "application/json"
         }
       }
     );
 
-    const data = await response.json();
-    res.json(data);
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(JSON.stringify(errorData));
+    }
+
+    res.json({ success: true });
   } catch (err) {
     console.error("Approve error:", err);
     res.status(500).json({ error: "Server error" });
@@ -50,7 +54,7 @@ app.post("/approve-payment", async (req, res) => {
 
 // ================== COMPLETE PAYMENT ==================
 app.post("/complete-payment", async (req, res) => {
-  const { paymentId, txid } = req.body;  // ← أضفنا txid هنا
+  const { paymentId, txid } = req.body;  // استقبال txid
 
   if (!paymentId || !txid) {
     return res.status(400).json({ error: "paymentId or txid missing" });
@@ -62,21 +66,20 @@ app.post("/complete-payment", async (req, res) => {
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${PI_API_KEY}`,
+          Authorization: `Key ${PI_API_KEY}`,  // ← تغيير هنا: Key بدلاً من Bearer
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({ txid })  // ← أرسلنا txid في الـ body
+        body: JSON.stringify({ txid })  // إرسال txid
       }
     );
 
-    const data = await response.json();
-
-    if (response.ok) {
-      res.json({ success: true, data });
-    } else {
-      console.error("Complete failed:", data);
-      res.status(400).json({ error: "Payment completion failed", details: data });
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(JSON.stringify(errorData));
     }
+
+    const data = await response.json();
+    res.json({ success: true, data });  // إرجاع success مثل الكود الناجح
   } catch (err) {
     console.error("Complete error:", err);
     res.status(500).json({ error: "Server error" });
