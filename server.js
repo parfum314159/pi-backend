@@ -50,10 +50,10 @@ app.post("/approve-payment", async (req, res) => {
 
 // ================== COMPLETE PAYMENT ==================
 app.post("/complete-payment", async (req, res) => {
-  const { paymentId } = req.body;
+  const { paymentId, txid } = req.body;  // ← أضفنا txid هنا
 
-  if (!paymentId) {
-    return res.status(400).json({ error: "paymentId missing" });
+  if (!paymentId || !txid) {
+    return res.status(400).json({ error: "paymentId or txid missing" });
   }
 
   try {
@@ -64,12 +64,19 @@ app.post("/complete-payment", async (req, res) => {
         headers: {
           Authorization: `Bearer ${PI_API_KEY}`,
           "Content-Type": "application/json"
-        }
+        },
+        body: JSON.stringify({ txid })  // ← أرسلنا txid في الـ body
       }
     );
 
     const data = await response.json();
-    res.json(data);
+
+    if (response.ok) {
+      res.json({ success: true, data });
+    } else {
+      console.error("Complete failed:", data);
+      res.status(400).json({ error: "Payment completion failed", details: data });
+    }
   } catch (err) {
     console.error("Complete error:", err);
     res.status(500).json({ error: "Server error" });
