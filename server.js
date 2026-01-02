@@ -1,25 +1,34 @@
 import express from "express";
 import fetch from "node-fetch";
 import cors from "cors";
+import admin from "firebase-admin";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 🔑 Pi Server API Key من Environment Variable فقط (أمان عالي)
+// PI_API_KEY from env
 const PI_API_KEY = process.env.PI_API_KEY;
 
 if (!PI_API_KEY) {
-  console.error("❌ PI_API_KEY is missing! Add it in Render Environment Variables.");
+  console.error("❌ PI_API_KEY is missing");
   process.exit(1);
 }
 
-// Rate limiting بسيط لمنع الـ abuse (حد أقصى 100 طلب في 15 دقيقة من IP واحد)
+// Initialize Firebase Admin
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+  projectId: "spicy-97f54"
+});
+const db = admin.firestore();
+
+// Rate limiting (simple in-memory, for production use redis)
 const rateLimit = new Map();
 app.use((req, res, next) => {
   const ip = req.ip;
   const now = Date.now();
-  const window = 15 * 60 * 1000; // 15 دقيقة
+  const window = 15 * 60 * 1000; // 15 min
   const limit = 100;
 
   if (!rateLimit.has(ip)) rateLimit.set(ip, []);
@@ -27,17 +36,17 @@ app.use((req, res, next) => {
   rateLimit.set(ip, [...requests, now]);
 
   if (requests.length >= limit) {
-    return res.status(429).json({ error: "Too many requests. Try again later." });
+    return res.status(429).json({ error: "Too many requests" });
   }
   next();
 });
 
-// Route اختبار
+// Test route
 app.get("/", (req, res) => {
-  res.send("Pi-backend is running securely ✅");
+  res.send("Pi-backend is running ✅");
 });
 
-// ================== APPROVE PAYMENT ==================
+// Approve payment
 app.post("/approve-payment", async (req, res) => {
   const { paymentId } = req.body;
 
@@ -59,23 +68,22 @@ app.post("/approve-payment", async (req, res) => {
 
     if (!response.ok) {
       const errorData = await response.json();
-      console.error("Approve failed:", errorData);
       throw new Error(JSON.stringify(errorData));
     }
 
     res.json({ success: true });
   } catch (err) {
-    console.error("Approve error:", err.message);
-    res.status(500).json({ error: "Server error during approval" });
+    console.error("Approve error:", err);
+    res.status(500).json({ error: "Server error" });
   }
 });
 
-// ================== COMPLETE PAYMENT ==================
+// Complete payment and update Firebase
 app.post("/complete-payment", async (req, res) => {
-  const { paymentId, txid } = req.body;
+  const { paymentId, txid, bookId, userUid } = req.body; // Add bookId and userUid from frontend metadata
 
-  if (!paymentId || !txid) {
-    return res.status(400).json({ error: "paymentId or txid missing" });
+  if (!paymentId || !txid || !bookId || !userUid) {
+    return res.status(400).json({ error: "Missing parameters" });
   }
 
   try {
@@ -93,20 +101,64 @@ app.post("/complete-payment", async (req, res) => {
 
     if (!response.ok) {
       const errorData = await response.json();
-      console.error("Complete failed:", errorData);
       throw new Error(JSON.stringify(errorData));
     }
 
     const data = await response.json();
-    res.json({ success: true, data });
+
+    // Securely update Firebase from backend
+    const bookRef = db.collection("books").doc(bookId);
+    const purchaseRef = db.collection("purchases").doc(userUid).collection("books").doc(bookId);
+
+    await admin.firestore().runTransaction(async (transaction) => {
+      const bookDoc = await transaction.get(bookRef);
+      if (!bookDoc.exists) throw new Error("Book not found");
+
+      const newSales = (bookDoc.data().salesCount || 0) + 1;
+      transaction.update(bookRef, { salesCount: newSales });
+      transaction.set(purchaseRef, { purchasedAt: Date.now() });
+    });
+
+    // Get PDF URL securely (only after purchase)
+    const bookSnap = await bookRef.get();
+    const pdfUrl = bookSnap.data().pdf;
+
+    res.json({ success: true, data, pdfUrl }); // Send PDF URL back to frontend
   } catch (err) {
-    console.error("Complete error:", err.message);
-    res.status(500).json({ error: "Server error during completion" });
+    console.error("Complete error:", err);
+    res.status(500).json({ error: "Server error" });
   }
 });
 
-// ================== START SERVER ==================
+// New route for secure PDF download (verify purchase before serving URL or stream)
+app.post("/get-pdf", async (req, res) => {
+  const { bookId, userUid } = req.body;
+
+  if (!bookId || !userUid) {
+    return res.status(400).json({ error: "Missing parameters" });
+  }
+
+  try {
+    const purchaseDoc = await db.collection("purchases").doc(userUid).collection("books").doc(bookId).get();
+    if (!purchaseDoc.exists) {
+      return res.status(403).json({ error: "You haven't purchased this book" });
+    }
+
+    const bookDoc = await db.collection("books").doc(bookId).get();
+    if (!bookDoc.exists) {
+      return res.status(404).json({ error: "Book not found" });
+    }
+
+    const pdfUrl = bookDoc.data().pdf;
+    res.json({ success: true, pdfUrl });
+  } catch (err) {
+    console.error("Get PDF error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Start server
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
-  console.log(`Secure server running on port ${port}`);
+  console.log(`Server running on port ${port}`);
 });
