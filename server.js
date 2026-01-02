@@ -7,52 +7,37 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// PI_API_KEY from env
+/* ================= ENV ================= */
 const PI_API_KEY = process.env.PI_API_KEY;
+const FIREBASE_SERVICE_ACCOUNT = process.env.FIREBASE_SERVICE_ACCOUNT;
 
 if (!PI_API_KEY) {
   console.error("❌ PI_API_KEY is missing");
   process.exit(1);
 }
+if (!FIREBASE_SERVICE_ACCOUNT) {
+  console.error("❌ FIREBASE_SERVICE_ACCOUNT is missing");
+  process.exit(1);
+}
 
-// Initialize Firebase Admin
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+/* ================= FIREBASE ADMIN ================= */
+const serviceAccount = JSON.parse(FIREBASE_SERVICE_ACCOUNT);
+
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
-  projectId: "spicy-97f54"
 });
+
 const db = admin.firestore();
 
-// Rate limiting (simple in-memory, for production use redis)
-const rateLimit = new Map();
-app.use((req, res, next) => {
-  const ip = req.ip;
-  const now = Date.now();
-  const window = 15 * 60 * 1000; // 15 min
-  const limit = 100;
-
-  if (!rateLimit.has(ip)) rateLimit.set(ip, []);
-  const requests = rateLimit.get(ip).filter(t => now - t < window);
-  rateLimit.set(ip, [...requests, now]);
-
-  if (requests.length >= limit) {
-    return res.status(429).json({ error: "Too many requests" });
-  }
-  next();
-});
-
-// Test route
+/* ================= TEST ================= */
 app.get("/", (req, res) => {
-  res.send("Pi-backend is running ✅");
+  res.send("Pi-backend is running securely ✅");
 });
 
-// Approve payment
+/* ================= APPROVE PAYMENT ================= */
 app.post("/approve-payment", async (req, res) => {
   const { paymentId } = req.body;
-
-  if (!paymentId) {
-    return res.status(400).json({ error: "paymentId missing" });
-  }
+  if (!paymentId) return res.status(400).json({ error: "paymentId missing" });
 
   try {
     const response = await fetch(
@@ -61,14 +46,14 @@ app.post("/approve-payment", async (req, res) => {
         method: "POST",
         headers: {
           Authorization: `Key ${PI_API_KEY}`,
-          "Content-Type": "application/json"
-        }
+          "Content-Type": "application/json",
+        },
       }
     );
 
     if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(JSON.stringify(errorData));
+      const err = await response.text();
+      return res.status(400).json({ error: err });
     }
 
     res.json({ success: true });
@@ -78,87 +63,69 @@ app.post("/approve-payment", async (req, res) => {
   }
 });
 
-// Complete payment and update Firebase
+/* ================= COMPLETE PAYMENT (SECURE) ================= */
 app.post("/complete-payment", async (req, res) => {
-  const { paymentId, txid, bookId, userUid } = req.body; // Add bookId and userUid from frontend metadata
-
-  if (!paymentId || !txid || !bookId || !userUid) {
-    return res.status(400).json({ error: "Missing parameters" });
+  const { paymentId, txid } = req.body;
+  if (!paymentId || !txid) {
+    return res.status(400).json({ error: "paymentId or txid missing" });
   }
 
   try {
+    /* 1️⃣ Complete payment with Pi */
     const response = await fetch(
       `https://api.minepi.com/v2/payments/${paymentId}/complete`,
       {
         method: "POST",
         headers: {
           Authorization: `Key ${PI_API_KEY}`,
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
         },
-        body: JSON.stringify({ txid })
+        body: JSON.stringify({ txid }),
       }
     );
 
     if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(JSON.stringify(errorData));
+      const err = await response.text();
+      return res.status(400).json({ error: err });
     }
 
-    const data = await response.json();
+    const paymentData = await response.json();
 
-    // Securely update Firebase from backend
+    /* 2️⃣ Verify metadata */
+    const bookId = paymentData?.metadata?.bookId;
+    const buyerUid = paymentData?.user_uid;
+
+    if (!bookId || !buyerUid) {
+      return res.status(400).json({ error: "Invalid payment metadata" });
+    }
+
+    /* 3️⃣ Secure Firestore update */
     const bookRef = db.collection("books").doc(bookId);
-    const purchaseRef = db.collection("purchases").doc(userUid).collection("books").doc(bookId);
 
-    await admin.firestore().runTransaction(async (transaction) => {
-      const bookDoc = await transaction.get(bookRef);
+    await db.runTransaction(async (t) => {
+      const bookDoc = await t.get(bookRef);
       if (!bookDoc.exists) throw new Error("Book not found");
 
-      const newSales = (bookDoc.data().salesCount || 0) + 1;
-      transaction.update(bookRef, { salesCount: newSales });
-      transaction.set(purchaseRef, { purchasedAt: Date.now() });
+      const currentSales = bookDoc.data().salesCount || 0;
+      t.update(bookRef, { salesCount: currentSales + 1 });
     });
 
-    // Get PDF URL securely (only after purchase)
-    const bookSnap = await bookRef.get();
-    const pdfUrl = bookSnap.data().pdf;
+    await db
+      .collection("purchases")
+      .doc(buyerUid)
+      .collection("books")
+      .doc(bookId)
+      .set({ purchasedAt: Date.now() });
 
-    res.json({ success: true, data, pdfUrl }); // Send PDF URL back to frontend
+    res.json({ success: true });
   } catch (err) {
     console.error("Complete error:", err);
-    res.status(500).json({ error: "Server error" });
+    res.status(500).json({ error: "Payment completion failed" });
   }
 });
 
-// New route for secure PDF download (verify purchase before serving URL or stream)
-app.post("/get-pdf", async (req, res) => {
-  const { bookId, userUid } = req.body;
-
-  if (!bookId || !userUid) {
-    return res.status(400).json({ error: "Missing parameters" });
-  }
-
-  try {
-    const purchaseDoc = await db.collection("purchases").doc(userUid).collection("books").doc(bookId).get();
-    if (!purchaseDoc.exists) {
-      return res.status(403).json({ error: "You haven't purchased this book" });
-    }
-
-    const bookDoc = await db.collection("books").doc(bookId).get();
-    if (!bookDoc.exists) {
-      return res.status(404).json({ error: "Book not found" });
-    }
-
-    const pdfUrl = bookDoc.data().pdf;
-    res.json({ success: true, pdfUrl });
-  } catch (err) {
-    console.error("Get PDF error:", err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-// Start server
-const port = process.env.PORT || 3000;
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
+/* ================= START ================= */
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log("Server running on port", PORT);
 });
