@@ -1,20 +1,14 @@
 {
-  "name": "spicy-pi-backend",
+  "name": "pi-backend",
   "version": "1.0.0",
-  "description": "Secure Pi Network payment backend for Spicy Library",
   "main": "server.js",
   "type": "module",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js"
+    "start": "node server.js"
   },
-  "keywords": ["pi-network", "firebase", "ebook", "payment"],
-  "author": "",
-  "license": "MIT",
   "dependencies": {
-    "express": "^4.19.2",
+    "express": "^4.18.2",
     "node-fetch": "^3.3.2",
-    "cors": "^2.8.5",
-    "firebase-admin": "^12.5.0"
+    "cors": "^2.8.5"
   }
 }
