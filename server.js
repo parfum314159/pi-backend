@@ -2,21 +2,25 @@ import express from "express";
 import fetch from "node-fetch";
 import cors from "cors";
 import admin from "firebase-admin";
-import fs from "fs";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 /* ================= PI API ================= */
-const PI_API_KEY = "PUT_YOUR_PI_SERVER_API_KEY_HERE";
+// هذا المفتاح نضعه في Render Environment Variables
+const PI_API_KEY = process.env.PI_API_KEY;
 
 /* ================= FIREBASE ADMIN ================= */
+// هذا أيضًا نضعه في Render Environment Variables
+const serviceAccount = JSON.parse(
+  process.env.FIREBASE_SERVICE_ACCOUNT
+);
+
 admin.initializeApp({
-  credential: admin.credential.cert(
-    JSON.parse(fs.readFileSync("./serviceAccountKey.json"))
-  )
+  credential: admin.credential.cert(serviceAccount)
 });
+
 const db = admin.firestore();
 
 /* ================= TEST ================= */
@@ -24,7 +28,7 @@ app.get("/", (req, res) => {
   res.send("Backend running securely ✅");
 });
 
-/* ================= APPROVE ================= */
+/* ================= APPROVE PAYMENT ================= */
 app.post("/approve-payment", async (req, res) => {
   const { paymentId } = req.body;
 
@@ -42,17 +46,16 @@ app.post("/approve-payment", async (req, res) => {
 
     res.json({ success: true });
   } catch (e) {
-    console.error(e);
+    console.error("Approve error:", e);
     res.status(500).json({ error: "approve failed" });
   }
 });
 
-/* ================= COMPLETE ================= */
+/* ================= COMPLETE PAYMENT ================= */
 app.post("/complete-payment", async (req, res) => {
   const { paymentId, txid } = req.body;
 
   try {
-    // 1️⃣ complete payment in Pi
     const r = await fetch(
       `https://api.minepi.com/v2/payments/${paymentId}/complete`,
       {
@@ -65,25 +68,26 @@ app.post("/complete-payment", async (req, res) => {
     );
 
     const payment = await r.json();
-    const { metadata, user_uid } = payment;
 
-    // 2️⃣ سجل الشراء
+    const userUid = payment.user_uid;
+    const bookId = payment.metadata.bookId;
+
+    // تسجيل الشراء بأمان
     await db
       .collection("purchases")
-      .doc(user_uid)
+      .doc(userUid)
       .collection("books")
-      .doc(metadata.bookId)
+      .doc(bookId)
       .set({
         paymentId,
         txid,
         createdAt: Date.now()
       });
 
-    // 3️⃣ أرجع نجاح
     res.json({ success: true });
 
   } catch (e) {
-    console.error(e);
+    console.error("Complete error:", e);
     res.status(500).json({ error: "completion failed" });
   }
 });
@@ -91,5 +95,5 @@ app.post("/complete-payment", async (req, res) => {
 /* ================= START ================= */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("Server running on", PORT);
+  console.log("Server running on port", PORT);
 });
