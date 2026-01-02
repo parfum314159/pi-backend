@@ -7,46 +7,46 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 🔑 Pi Server API Key من Environment Variable
+// PI_API_KEY من Environment Variable
 const PI_API_KEY = process.env.PI_API_KEY;
 
-// حماية إضافية
 if (!PI_API_KEY) {
   console.error("❌ PI_API_KEY is missing");
   process.exit(1);
 }
 
-// Initialize Firebase Admin SDK
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+// Firebase Admin من Environment Variable (string JSON)
+let serviceAccount;
+try {
+  serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+} catch (err) {
+  console.error("❌ Invalid FIREBASE_SERVICE_ACCOUNT JSON");
+  process.exit(1);
+}
+
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
 });
 const db = admin.firestore();
 
-// Route اختبار
+// Test route
 app.get("/", (req, res) => {
-  res.send("Pi-backend is running ✅");
+  res.send("Pi-backend is running securely ✅");
 });
 
-// ================== APPROVE PAYMENT ==================
+// Approve payment
 app.post("/approve-payment", async (req, res) => {
   const { paymentId } = req.body;
-
-  if (!paymentId) {
-    return res.status(400).json({ error: "paymentId missing" });
-  }
+  if (!paymentId) return res.status(400).json({ error: "paymentId missing" });
 
   try {
-    const response = await fetch(
-      `https://api.minepi.com/v2/payments/${paymentId}/approve`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Key ${PI_API_KEY}`,  // ← تغيير هنا: Key بدلاً من Bearer
-          "Content-Type": "application/json"
-        }
+    const response = await fetch(`https://api.minepi.com/v2/payments/${paymentId}/approve`, {
+      method: "POST",
+      headers: {
+        Authorization: `Key ${PI_API_KEY}`,
+        "Content-Type": "application/json"
       }
-    );
+    });
 
     if (!response.ok) {
       const errorData = await response.json();
@@ -55,31 +55,28 @@ app.post("/approve-payment", async (req, res) => {
 
     res.json({ success: true });
   } catch (err) {
-    console.error("Approve error:", err);
+    console.error("Approve error:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
 
-// ================== COMPLETE PAYMENT ==================
+// Complete payment + update Firebase securely
 app.post("/complete-payment", async (req, res) => {
-  const { paymentId, txid, bookId, userUid } = req.body;  // استقبال txid, bookId, userUid
+  const { paymentId, txid, bookId, userUid } = req.body;
 
   if (!paymentId || !txid || !bookId || !userUid) {
-    return res.status(400).json({ error: "paymentId, txid, bookId or userUid missing" });
+    return res.status(400).json({ error: "Missing required fields" });
   }
 
   try {
-    const response = await fetch(
-      `https://api.minepi.com/v2/payments/${paymentId}/complete`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Key ${PI_API_KEY}`,  // ← تغيير هنا: Key بدلاً من Bearer
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ txid })  // إرسال txid
-      }
-    );
+    const response = await fetch(`https://api.minepi.com/v2/payments/${paymentId}/complete`, {
+      method: "POST",
+      headers: {
+        Authorization: `Key ${PI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ txid })
+    });
 
     if (!response.ok) {
       const errorData = await response.json();
@@ -88,60 +85,47 @@ app.post("/complete-payment", async (req, res) => {
 
     const data = await response.json();
 
-    // Update Firestore securely from backend
+    // Update Firestore from backend (bypasses client rules)
     const bookRef = db.collection("books").doc(bookId);
     const purchaseRef = db.collection("purchases").doc(userUid).collection("books").doc(bookId);
 
-    await db.runTransaction(async (transaction) => {
-      const bookDoc = await transaction.get(bookRef);
-      if (!bookDoc.exists) {
-        throw new Error("Book does not exist!");
-      }
-      const newSales = (bookDoc.data().salesCount || 0) + 1;
-      transaction.update(bookRef, { salesCount: newSales });
-      transaction.set(purchaseRef, { purchasedAt: Date.now() });
+    await db.runTransaction(async (t) => {
+      const bookDoc = await t.get(bookRef);
+      if (!bookDoc.exists) throw new Error("Book not found");
+
+      t.update(bookRef, { salesCount: admin.firestore.FieldValue.increment(1) });
+      t.set(purchaseRef, { purchasedAt: Date.now() });
     });
 
-    // Return PDF URL securely
-    const bookDoc = await bookRef.get();
-    const pdfUrl = bookDoc.data().pdf;
+    // Get PDF URL
+    const bookSnap = await bookRef.get();
+    const pdfUrl = bookSnap.data().pdf;
 
-    res.json({ success: true, data, pdfUrl });
-  } catch (err) {
-    console.error("Complete error:", err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-// ================== GET PDF (for secure download) ==================
-app.post("/get-pdf", async (req, res) => {
-  const { bookId, userUid } = req.body;
-
-  if (!bookId || !userUid) {
-    return res.status(400).json({ error: "bookId or userUid missing" });
-  }
-
-  try {
-    const purchaseDoc = await db.collection("purchases").doc(userUid).collection("books").doc(bookId).get();
-    if (!purchaseDoc.exists) {
-      return res.status(403).json({ error: "Access denied: You have not purchased this book" });
-    }
-
-    const bookDoc = await db.collection("books").doc(bookId).get();
-    if (!bookDoc.exists) {
-      return res.status(404).json({ error: "Book not found" });
-    }
-
-    const pdfUrl = bookDoc.data().pdf;
     res.json({ success: true, pdfUrl });
   } catch (err) {
-    console.error("Get PDF error:", err);
+    console.error("Complete error:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
 
-// ================== START SERVER ==================
-const port = process.env.PORT || 3000;
-app.listen(port, () => {
-  console.log("Server running on port", port);
+// Secure PDF download (verify purchase first)
+app.post("/get-pdf", async (req, res) => {
+  const { bookId, userUid } = req.body;
+  if (!bookId || !userUid) return res.status(400).json({ error: "Missing fields" });
+
+  try {
+    const purchaseSnap = await db.collection("purchases").doc(userUid).collection("books").doc(bookId).get();
+    if (!purchaseSnap.exists) return res.status(403).json({ error: "Not purchased" });
+
+    const bookSnap = await db.collection("books").doc(bookId).get();
+    if (!bookSnap.exists) return res.status(404).json({ error: "Book not found" });
+
+    res.json({ success: true, pdfUrl: bookSnap.data().pdf });
+  } catch (err) {
+    console.error("Get PDF error:", err.message);
+    res.status(500).json({ error: "Server error" });
+  }
 });
+
+const port = process.env.PORT || 3000;
+app.listen(port, () => console.log(`Server running on port ${port}`));
