@@ -1,93 +1,95 @@
 import express from "express";
 import fetch from "node-fetch";
 import cors from "cors";
+import admin from "firebase-admin";
+import fs from "fs";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 🔑 Pi Server API Key من Environment Variable
-const PI_API_KEY = process.env.PI_API_KEY;
+/* ================= PI API ================= */
+const PI_API_KEY = "PUT_YOUR_PI_SERVER_API_KEY_HERE";
 
-// حماية إضافية
-if (!PI_API_KEY) {
-  console.error("❌ PI_API_KEY is missing");
-  process.exit(1);
-}
+/* ================= FIREBASE ADMIN ================= */
+admin.initializeApp({
+  credential: admin.credential.cert(
+    JSON.parse(fs.readFileSync("./serviceAccountKey.json"))
+  )
+});
+const db = admin.firestore();
 
-// Route اختبار
+/* ================= TEST ================= */
 app.get("/", (req, res) => {
-  res.send("Pi-backend is running ✅");
+  res.send("Backend running securely ✅");
 });
 
-// ================== APPROVE PAYMENT ==================
+/* ================= APPROVE ================= */
 app.post("/approve-payment", async (req, res) => {
   const { paymentId } = req.body;
 
-  if (!paymentId) {
-    return res.status(400).json({ error: "paymentId missing" });
-  }
-
   try {
-    const response = await fetch(
+    await fetch(
       `https://api.minepi.com/v2/payments/${paymentId}/approve`,
       {
         method: "POST",
         headers: {
-          Authorization: `Key ${PI_API_KEY}`,  // ← تغيير هنا: Key بدلاً من Bearer
+          Authorization: `Bearer ${PI_API_KEY}`,
           "Content-Type": "application/json"
         }
       }
     );
 
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(JSON.stringify(errorData));
-    }
-
     res.json({ success: true });
-  } catch (err) {
-    console.error("Approve error:", err);
-    res.status(500).json({ error: "Server error" });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "approve failed" });
   }
 });
 
-// ================== COMPLETE PAYMENT ==================
+/* ================= COMPLETE ================= */
 app.post("/complete-payment", async (req, res) => {
-  const { paymentId, txid } = req.body;  // استقبال txid
-
-  if (!paymentId || !txid) {
-    return res.status(400).json({ error: "paymentId or txid missing" });
-  }
+  const { paymentId, txid } = req.body;
 
   try {
-    const response = await fetch(
+    // 1️⃣ complete payment in Pi
+    const r = await fetch(
       `https://api.minepi.com/v2/payments/${paymentId}/complete`,
       {
         method: "POST",
         headers: {
-          Authorization: `Key ${PI_API_KEY}`,  // ← تغيير هنا: Key بدلاً من Bearer
+          Authorization: `Bearer ${PI_API_KEY}`,
           "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ txid })  // إرسال txid
+        }
       }
     );
 
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(JSON.stringify(errorData));
-    }
+    const payment = await r.json();
+    const { metadata, user_uid } = payment;
 
-    const data = await response.json();
-    res.json({ success: true, data });  // إرجاع success مثل الكود الناجح
-  } catch (err) {
-    console.error("Complete error:", err);
-    res.status(500).json({ error: "Server error" });
+    // 2️⃣ سجل الشراء
+    await db
+      .collection("purchases")
+      .doc(user_uid)
+      .collection("books")
+      .doc(metadata.bookId)
+      .set({
+        paymentId,
+        txid,
+        createdAt: Date.now()
+      });
+
+    // 3️⃣ أرجع نجاح
+    res.json({ success: true });
+
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "completion failed" });
   }
 });
 
-// ================== START SERVER ==================
-const port = process.env.PORT || 3000;
-app.listen(port, () => {
-  console.log("Server running on port", port);
+/* ================= START ================= */
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log("Server running on", PORT);
 });
