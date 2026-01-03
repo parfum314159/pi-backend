@@ -13,11 +13,14 @@ if (!PI_API_KEY) {
   process.exit(1);
 }
 
-// Firebase Admin Initialization
+// Firebase Admin Initialization with private_key fix
 let db = null;
 if (process.env.FIREBASE_SERVICE_ACCOUNT) {
   try {
-    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    let serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    // Fix newlines in private_key
+    serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount)
     });
@@ -150,21 +153,66 @@ app.post("/reset-sales", async (req, res) => {
   }
 });
 
-// Get ratings for a book (جديد: لجلب التقييمات من Firebase عبر backend)
+// Get all books (جلب الكتب من Firebase)
+app.get("/books", async (req, res) => {
+  if (!db) return res.status(500).json({ error: "Firestore not ready" });
+
+  try {
+    const snap = await db.collection("books").get();
+    const books = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    res.json({ success: true, books });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get ratings for a book (جلب التقييمات من Firebase)
 app.post("/get-ratings", async (req, res) => {
   const { bookId, userUid } = req.body;
   if (!bookId || !db) return res.status(400).json({ error: "missing data" });
 
   try {
     const ratingsSnap = await db.collection("ratings").doc(bookId).collection("votes").get();
-    let likes = ratingsSnap.docs.filter(d => d.data().vote === "like").length;
-    let dislikes = ratingsSnap.docs.filter(d => d.data().vote === "dislike").length;
+    const likes = ratingsSnap.docs.filter(d => d.data().vote === "like").length;
+    const dislikes = ratingsSnap.docs.filter(d => d.data().vote === "dislike").length;
     let userVote = null;
     if (userUid) {
       const userVoteDoc = await db.collection("ratings").doc(bookId).collection("votes").doc(userUid).get();
       userVote = userVoteDoc.exists ? userVoteDoc.data().vote : null;
     }
     res.json({ success: true, likes, dislikes, userVote });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get user purchases (جلب المشتريات من Firebase)
+app.post("/purchases", async (req, res) => {
+  const { userUid } = req.body;
+  if (!userUid || !db) return res.status(400).json({ error: "missing userUid" });
+
+  try {
+    const purchasesSnap = await db.collection("purchases").doc(userUid).collection("books").get();
+    const purchases = purchasesSnap.docs.map(doc => doc.id);
+    const books = await Promise.all(purchases.map(async (bookId) => {
+      const bookSnap = await db.collection("books").doc(bookId).get();
+      return { id: bookId, ...bookSnap.data() };
+    }));
+    res.json({ success: true, purchases: books });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get user sales (جلب المبيعات من Firebase)
+app.post("/sales", async (req, res) => {
+  const { username } = req.body;
+  if (!username || !db) return res.status(400).json({ error: "missing username" });
+
+  try {
+    const snap = await db.collection("books").where("owner", "==", username).get();
+    const sales = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    res.json({ success: true, sales });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
