@@ -5,49 +5,33 @@ import admin from "firebase-admin";
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: "10mb" }));
+app.use(express.json());
 
 const PI_API_KEY = process.env.PI_API_KEY;
 if (!PI_API_KEY) {
-  console.error("❌ PI_API_KEY is missing!");
+  console.error("PI_API_KEY missing");
   process.exit(1);
 }
 
-// Firebase Admin Initialization with robust private_key fix
 let db = null;
 if (process.env.FIREBASE_SERVICE_ACCOUNT) {
   try {
-    let serviceAccountStr = process.env.FIREBASE_SERVICE_ACCOUNT;
-
-    // إصلاح escaped newlines (\\n → \n)
-    serviceAccountStr = serviceAccountStr.replace(/\\n/g, "\n");
-
-    // إزالة أي مسافات زيادة أو أحرف غريبة قد تسبب خطأ JSON parse
-    serviceAccountStr = serviceAccountStr.trim();
-
-    const serviceAccount = JSON.parse(serviceAccountStr);
-
+    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount)
     });
     db = admin.firestore();
-    console.log("Firebase Admin initialized successfully ✅");
+    console.log("Firebase initialized");
   } catch (err) {
-    console.error("Firebase Admin init failed:", err.message);
-    console.error("Full error:", err);
-    console.error("Check your FIREBASE_SERVICE_ACCOUNT JSON format – especially private_key with correct \\n");
+    console.error("Firebase init failed:", err.message);
   }
-} else {
-  console.warn("FIREBASE_SERVICE_ACCOUNT not set – Firestore disabled.");
 }
 
-// Root
-app.get("/", (req, res) => res.send("Spicy Library Backend Running Securely ✅"));
+app.get("/", (req, res) => res.send("Backend running"));
 
-// Approve payment
 app.post("/approve-payment", async (req, res) => {
   const { paymentId } = req.body;
-  if (!paymentId) return res.status(400).json({ error: "paymentId missing" });
+  if (!paymentId) return res.status(400).json({ error: "missing paymentId" });
 
   try {
     const response = await fetch(`https://api.minepi.com/v2/payments/${paymentId}/approve`, {
@@ -57,17 +41,13 @@ app.post("/approve-payment", async (req, res) => {
     if (!response.ok) throw new Error(await response.text());
     res.json({ success: true });
   } catch (err) {
-    console.error("Approve error:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Complete payment
 app.post("/complete-payment", async (req, res) => {
   const { paymentId, txid, bookId, userUid } = req.body;
-  if (!paymentId || !txid || !bookId || !userUid || !db) {
-    return res.status(400).json({ error: "missing data or Firestore not ready" });
-  }
+  if (!paymentId || !txid || !bookId || !userUid || !db) return res.status(400).json({ error: "missing data" });
 
   try {
     const response = await fetch(`https://api.minepi.com/v2/payments/${paymentId}/complete`, {
@@ -88,12 +68,10 @@ app.post("/complete-payment", async (req, res) => {
     const bookSnap = await bookRef.get();
     res.json({ success: true, pdfUrl: bookSnap.data().pdf });
   } catch (err) {
-    console.error("Complete payment error:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Get PDF
 app.post("/get-pdf", async (req, res) => {
   const { bookId, userUid } = req.body;
   if (!bookId || !userUid || !db) return res.status(400).json({ error: "missing data" });
@@ -103,13 +81,14 @@ app.post("/get-pdf", async (req, res) => {
     if (!purchaseSnap.exists) return res.status(403).json({ error: "not purchased" });
 
     const bookSnap = await db.collection("books").doc(bookId).get();
+    if (!bookSnap.exists) return res.status(404).json({ error: "book not found" });
+
     res.json({ success: true, pdfUrl: bookSnap.data().pdf });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Rate book
 app.post("/rate-book", async (req, res) => {
   const { bookId, voteType, userUid } = req.body;
   if (!bookId || !voteType || !userUid || !db) return res.status(400).json({ error: "missing data" });
@@ -125,13 +104,12 @@ app.post("/rate-book", async (req, res) => {
   }
 });
 
-// Save book
 app.post("/save-book", async (req, res) => {
   const { title, price, description, language, pageCount, cover, pdf, owner, ownerUid } = req.body;
-  if (!title || !price || !cover || !pdf || !owner || !ownerUid || !db) return res.status(400).json({ error: "missing data" });
+  if (!title || !price || !cover || !pdf || !ownerUid || !db) return res.status(400).json({ error: "missing data" });
 
   try {
-    const docRef = await db.collection("books").add({
+    await db.collection("books").add({
       title,
       price: Number(price),
       description: description || "",
@@ -144,13 +122,12 @@ app.post("/save-book", async (req, res) => {
       ownerUid,
       createdAt: Date.now()
     });
-    res.json({ success: true, bookId: docRef.id });
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Reset sales after payout
 app.post("/reset-sales", async (req, res) => {
   const { username } = req.body;
   if (!username || !db) return res.status(400).json({ error: "missing username" });
@@ -166,72 +143,6 @@ app.post("/reset-sales", async (req, res) => {
   }
 });
 
-// جلب جميع الكتب (للـ HTML)
-app.get("/books", async (req, res) => {
-  if (!db) return res.status(503).json({ error: "Firestore not initialized" });
-  try {
-    const snap = await db.collection("books").orderBy("createdAt", "desc").get();
-    const books = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    res.json({ success: true, books });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// جلب تقييمات كتاب معين
-app.post("/book-ratings", async (req, res) => {
-  const { bookId, userUid } = req.body;
-  if (!bookId || !db) return res.status(400).json({ error: "missing data" });
-  try {
-    const ratingsSnap = await db.collection("ratings").doc(bookId).collection("votes").get();
-    const likes = ratingsSnap.docs.filter(d => d.data().vote === "like").length;
-    const dislikes = ratingsSnap.docs.filter(d => d.data().vote === "dislike").length;
-    let userVote = null;
-    if (userUid) {
-      const userVoteDoc = await db.collection("ratings").doc(bookId).collection("votes").doc(userUid).get();
-      userVote = userVoteDoc.exists ? userVoteDoc.data().vote : null;
-    }
-    res.json({ success: true, likes, dislikes, userVote });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// جلب مشتريات المستخدم
-app.post("/my-purchases", async (req, res) => {
-  const { userUid } = req.body;
-  if (!userUid || !db) return res.status(400).json({ error: "missing userUid" });
-  try {
-    const purchasesSnap = await db.collection("purchases").doc(userUid).collection("books").get();
-    const bookIds = purchasesSnap.docs.map(doc => doc.id);
-    const books = [];
-    for (const bookId of bookIds) {
-      const bookSnap = await db.collection("books").doc(bookId).get();
-      if (bookSnap.exists) {
-        books.push({ id: bookId, ...bookSnap.data() });
-      }
-    }
-    res.json({ success: true, books });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// جلب مبيعات المستخدم
-app.post("/my-sales", async (req, res) => {
-  const { username } = req.body;
-  if (!username || !db) return res.status(400).json({ error: "missing username" });
-  try {
-    const snap = await db.collection("books").where("owner", "==", username).get();
-    const books = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    res.json({ success: true, books });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
 const port = process.env.PORT || 3000;
-app.listen(port, () => {
-  console.log(`Spicy Library Backend running on port ${port} 🚀`);
-  console.log(`Date: January 03, 2026 – Ready for Pi Mainnet!`);
-});
+app.listen(port, () => console.log(`Server on port ${port}`));
+
