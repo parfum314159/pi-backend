@@ -81,6 +81,8 @@ app.post("/get-pdf", async (req, res) => {
     if (!purchaseSnap.exists) return res.status(403).json({ error: "not purchased" });
 
     const bookSnap = await db.collection("books").doc(bookId).get();
+    if (!bookSnap.exists) return res.status(404).json({ error: "book not found" });
+
     res.json({ success: true, pdfUrl: bookSnap.data().pdf });
   } catch (err) {
     res.status(500).json({ error: err.message });
