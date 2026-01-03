@@ -144,5 +144,17 @@ app.post("/reset-sales", async (req, res) => {
 });
 
 const port = process.env.PORT || 3000;
+// جلب جميع الكتب (للاختبار في المتصفح)
+app.get("/books", async (req, res) => {
+  if (!db) return res.status(500).json({ error: "Firestore not ready" });
+  try {
+    const snap = await db.collection("books").orderBy("createdAt", "desc").get();
+    const books = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    res.json({ success: true, books });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 app.listen(port, () => console.log(`Server on port ${port}`));
+
 
