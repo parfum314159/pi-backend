@@ -35,7 +35,7 @@ app.get("/", (req, res) => res.send("Backend running ✅"));
 // Approve payment
 app.post("/approve-payment", async (req, res) => {
   const { paymentId } = req.body;
-  if (!paymentId) return res.status(400).json({ error: "missing paymentId" });
+  if (!paymentId) return res.status(400).json({ error: "paymentId missing" });
 
   try {
     const response = await fetch(`https://api.minepi.com/v2/payments/${paymentId}/approve`, {
@@ -49,7 +49,7 @@ app.post("/approve-payment", async (req, res) => {
   }
 });
 
-// Complete payment + update Firestore (يحدث عدد المبيعات)
+// Complete payment + update Firestore
 app.post("/complete-payment", async (req, res) => {
   const { paymentId, txid, bookId, userUid } = req.body;
   if (!paymentId || !txid || !bookId || !userUid || !db) return res.status(400).json({ error: "missing data" });
@@ -66,10 +66,7 @@ app.post("/complete-payment", async (req, res) => {
     const purchaseRef = db.collection("purchases").doc(userUid).collection("books").doc(bookId);
 
     await db.runTransaction(async (t) => {
-      const bookDoc = await t.get(bookRef);
-      if (!bookDoc.exists) throw new Error("Book not found");
-
-      t.update(bookRef, { salesCount: admin.firestore.FieldValue.increment(1) }); // تحديث عدد المبيعات
+      t.update(bookRef, { salesCount: admin.firestore.FieldValue.increment(1) });
       t.set(purchaseRef, { purchasedAt: Date.now() });
     });
 
@@ -80,7 +77,7 @@ app.post("/complete-payment", async (req, res) => {
   }
 });
 
-// Get PDF (تحميل الكتاب)
+// Get PDF
 app.post("/get-pdf", async (req, res) => {
   const { bookId, userUid } = req.body;
   if (!bookId || !userUid || !db) return res.status(400).json({ error: "missing data" });
@@ -96,7 +93,7 @@ app.post("/get-pdf", async (req, res) => {
   }
 });
 
-// Rate book (التقييمات)
+// Rate book
 app.post("/rate-book", async (req, res) => {
   const { bookId, voteType, userUid } = req.body;
   if (!bookId || !voteType || !userUid || !db) return res.status(400).json({ error: "missing data" });
@@ -112,7 +109,7 @@ app.post("/rate-book", async (req, res) => {
   }
 });
 
-// Save book (رفع الكتاب)
+// Save book
 app.post("/save-book", async (req, res) => {
   const { title, price, description, language, pageCount, cover, pdf, owner, ownerUid } = req.body;
   if (!title || !price || !cover || !pdf || !owner || !ownerUid || !db) return res.status(400).json({ error: "missing data" });
@@ -137,7 +134,7 @@ app.post("/save-book", async (req, res) => {
   }
 });
 
-// Reset sales (السحب وتصفير المبيعات)
+// Reset sales
 app.post("/reset-sales", async (req, res) => {
   const { username } = req.body;
   if (!username || !db) return res.status(400).json({ error: "missing username" });
@@ -148,6 +145,26 @@ app.post("/reset-sales", async (req, res) => {
     snap.forEach(doc => batch.update(doc.ref, { salesCount: 0 }));
     await batch.commit();
     res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get ratings for a book (جديد: لجلب التقييمات من Firebase عبر backend)
+app.post("/get-ratings", async (req, res) => {
+  const { bookId, userUid } = req.body;
+  if (!bookId || !db) return res.status(400).json({ error: "missing data" });
+
+  try {
+    const ratingsSnap = await db.collection("ratings").doc(bookId).collection("votes").get();
+    let likes = ratingsSnap.docs.filter(d => d.data().vote === "like").length;
+    let dislikes = ratingsSnap.docs.filter(d => d.data().vote === "dislike").length;
+    let userVote = null;
+    if (userUid) {
+      const userVoteDoc = await db.collection("ratings").doc(bookId).collection("votes").doc(userUid).get();
+      userVote = userVoteDoc.exists ? userVoteDoc.data().vote : null;
+    }
+    res.json({ success: true, likes, dislikes, userVote });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
