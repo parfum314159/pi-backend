@@ -13,7 +13,7 @@ if (!PI_API_KEY) {
   process.exit(1);
 }
 
-// Firebase Admin
+// Firebase Admin Initialization
 let db = null;
 if (process.env.FIREBASE_SERVICE_ACCOUNT) {
   try {
@@ -27,15 +27,15 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT) {
     console.error("Firebase Admin init failed:", err.message);
   }
 } else {
-  console.warn("FIREBASE_SERVICE_ACCOUNT not set");
+  console.warn("FIREBASE_SERVICE_ACCOUNT not set – Firestore writes disabled.");
 }
 
-app.get("/", (req, res) => res.send("Spicy Library Backend is running ✅"));
+app.get("/", (req, res) => res.send("Backend running ✅"));
 
 // Approve payment
 app.post("/approve-payment", async (req, res) => {
   const { paymentId } = req.body;
-  if (!paymentId) return res.status(400).json({ error: "paymentId missing" });
+  if (!paymentId) return res.status(400).json({ error: "missing paymentId" });
 
   try {
     const response = await fetch(`https://api.minepi.com/v2/payments/${paymentId}/approve`, {
@@ -49,12 +49,10 @@ app.post("/approve-payment", async (req, res) => {
   }
 });
 
-// Complete payment
+// Complete payment + update Firestore (يحدث عدد المبيعات)
 app.post("/complete-payment", async (req, res) => {
   const { paymentId, txid, bookId, userUid } = req.body;
-  if (!paymentId || !txid || !bookId || !userUid || !db) {
-    return res.status(400).json({ error: "missing data or Firestore not ready" });
-  }
+  if (!paymentId || !txid || !bookId || !userUid || !db) return res.status(400).json({ error: "missing data" });
 
   try {
     const response = await fetch(`https://api.minepi.com/v2/payments/${paymentId}/complete`, {
@@ -68,7 +66,10 @@ app.post("/complete-payment", async (req, res) => {
     const purchaseRef = db.collection("purchases").doc(userUid).collection("books").doc(bookId);
 
     await db.runTransaction(async (t) => {
-      t.update(bookRef, { salesCount: admin.firestore.FieldValue.increment(1) });
+      const bookDoc = await t.get(bookRef);
+      if (!bookDoc.exists) throw new Error("Book not found");
+
+      t.update(bookRef, { salesCount: admin.firestore.FieldValue.increment(1) }); // تحديث عدد المبيعات
       t.set(purchaseRef, { purchasedAt: Date.now() });
     });
 
@@ -79,7 +80,7 @@ app.post("/complete-payment", async (req, res) => {
   }
 });
 
-// Get PDF
+// Get PDF (تحميل الكتاب)
 app.post("/get-pdf", async (req, res) => {
   const { bookId, userUid } = req.body;
   if (!bookId || !userUid || !db) return res.status(400).json({ error: "missing data" });
@@ -95,7 +96,7 @@ app.post("/get-pdf", async (req, res) => {
   }
 });
 
-// Rate book
+// Rate book (التقييمات)
 app.post("/rate-book", async (req, res) => {
   const { bookId, voteType, userUid } = req.body;
   if (!bookId || !voteType || !userUid || !db) return res.status(400).json({ error: "missing data" });
@@ -111,7 +112,7 @@ app.post("/rate-book", async (req, res) => {
   }
 });
 
-// Save book
+// Save book (رفع الكتاب)
 app.post("/save-book", async (req, res) => {
   const { title, price, description, language, pageCount, cover, pdf, owner, ownerUid } = req.body;
   if (!title || !price || !cover || !pdf || !owner || !ownerUid || !db) return res.status(400).json({ error: "missing data" });
@@ -136,7 +137,7 @@ app.post("/save-book", async (req, res) => {
   }
 });
 
-// Reset sales
+// Reset sales (السحب وتصفير المبيعات)
 app.post("/reset-sales", async (req, res) => {
   const { username } = req.body;
   if (!username || !db) return res.status(400).json({ error: "missing username" });
