@@ -1,222 +1,186 @@
 import express from "express";
-import fetch from "node-fetch";
 import cors from "cors";
 import admin from "firebase-admin";
+import fetch from "node-fetch";
+import dotenv from "dotenv";
+import bodyParser from "body-parser";
+dotenv.config();
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: "10mb" }));
+app.use(express.json({ limit: "15mb" }));
+app.use(bodyParser.json());
 
-const PI_API_KEY = process.env.PI_API_KEY;
-if (!PI_API_KEY) {
-  console.error("❌ PI_API_KEY is missing!");
-  process.exit(1);
-}
-
-// Firebase Admin Initialization with private_key fix
+// ====== Firebase Admin Setup ======
 let db = null;
 if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-  try {
-    let serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-    // Fix newlines in private_key
-    serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
-
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount)
-    });
-    db = admin.firestore();
-    console.log("Firebase Admin initialized successfully ✅");
-  } catch (err) {
-    console.error("Firebase Admin init failed:", err.message);
-  }
+    try {
+        const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+        serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+        admin.initializeApp({
+            credential: admin.credential.cert(serviceAccount)
+        });
+        db = admin.firestore();
+        console.log("✅ Firebase Admin initialized");
+    } catch (err) {
+        console.error("Firebase Admin init failed:", err.message);
+    }
 } else {
-  console.warn("FIREBASE_SERVICE_ACCOUNT not set – Firestore writes disabled.");
+    console.warn("⚠️ FIREBASE_SERVICE_ACCOUNT not set");
 }
 
-app.get("/", (req, res) => res.send("Backend running ✅"));
+// ====== Pi API Key ======
+const PI_API_KEY = process.env.PI_API_KEY;
+if (!PI_API_KEY) {
+    console.error("❌ PI_API_KEY missing");
+    process.exit(1);
+}
 
-// Approve payment
-app.post("/approve-payment", async (req, res) => {
-  const { paymentId } = req.body;
-  if (!paymentId) return res.status(400).json({ error: "paymentId missing" });
+// ====== Middleware: Verify Pi Token ======
+async function verifyPiToken(req, res, next) {
+    const token = req.headers.authorization;
+    if (!token) return res.status(401).json({ error: "Missing authorization header" });
 
-  try {
-    const response = await fetch(`https://api.minepi.com/v2/payments/${paymentId}/approve`, {
-      method: "POST",
-      headers: { Authorization: `Key ${PI_API_KEY}` }
-    });
-    if (!response.ok) throw new Error(await response.text());
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Complete payment + update Firestore
-app.post("/complete-payment", async (req, res) => {
-  const { paymentId, txid, bookId, userUid } = req.body;
-  if (!paymentId || !txid || !bookId || !userUid || !db) return res.status(400).json({ error: "missing data" });
-
-  try {
-    const response = await fetch(`https://api.minepi.com/v2/payments/${paymentId}/complete`, {
-      method: "POST",
-      headers: { Authorization: `Key ${PI_API_KEY}` },
-      body: JSON.stringify({ txid })
-    });
-    if (!response.ok) throw new Error(await response.text());
-
-    const bookRef = db.collection("books").doc(bookId);
-    const purchaseRef = db.collection("purchases").doc(userUid).collection("books").doc(bookId);
-
-    await db.runTransaction(async (t) => {
-      t.update(bookRef, { salesCount: admin.firestore.FieldValue.increment(1) });
-      t.set(purchaseRef, { purchasedAt: Date.now() });
-    });
-
-    const bookSnap = await bookRef.get();
-    res.json({ success: true, pdfUrl: bookSnap.data().pdf });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Get PDF
-app.post("/get-pdf", async (req, res) => {
-  const { bookId, userUid } = req.body;
-  if (!bookId || !userUid || !db) return res.status(400).json({ error: "missing data" });
-
-  try {
-    const purchaseSnap = await db.collection("purchases").doc(userUid).collection("books").doc(bookId).get();
-    if (!purchaseSnap.exists) return res.status(403).json({ error: "not purchased" });
-
-    const bookSnap = await db.collection("books").doc(bookId).get();
-    res.json({ success: true, pdfUrl: bookSnap.data().pdf });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Rate book
-app.post("/rate-book", async (req, res) => {
-  const { bookId, voteType, userUid } = req.body;
-  if (!bookId || !voteType || !userUid || !db) return res.status(400).json({ error: "missing data" });
-
-  try {
-    await db.collection("ratings").doc(bookId).collection("votes").doc(userUid).set({
-      vote: voteType,
-      votedAt: Date.now()
-    });
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Save book
-app.post("/save-book", async (req, res) => {
-  const { title, price, description, language, pageCount, cover, pdf, owner, ownerUid } = req.body;
-  if (!title || !price || !cover || !pdf || !owner || !ownerUid || !db) return res.status(400).json({ error: "missing data" });
-
-  try {
-    const docRef = await db.collection("books").add({
-      title,
-      price: Number(price),
-      description: description || "",
-      language: language || "",
-      pageCount: pageCount || "Unknown",
-      salesCount: 0,
-      cover,
-      pdf,
-      owner,
-      ownerUid,
-      createdAt: Date.now()
-    });
-    res.json({ success: true, bookId: docRef.id });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Reset sales
-app.post("/reset-sales", async (req, res) => {
-  const { username } = req.body;
-  if (!username || !db) return res.status(400).json({ error: "missing username" });
-
-  try {
-    const snap = await db.collection("books").where("owner", "==", username).get();
-    const batch = db.batch();
-    snap.forEach(doc => batch.update(doc.ref, { salesCount: 0 }));
-    await batch.commit();
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Get all books (جلب الكتب من Firebase)
-app.get("/books", async (req, res) => {
-  if (!db) return res.status(500).json({ error: "Firestore not ready" });
-
-  try {
-    const snap = await db.collection("books").get();
-    const books = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    res.json({ success: true, books });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Get ratings for a book (جلب التقييمات من Firebase)
-app.post("/get-ratings", async (req, res) => {
-  const { bookId, userUid } = req.body;
-  if (!bookId || !db) return res.status(400).json({ error: "missing data" });
-
-  try {
-    const ratingsSnap = await db.collection("ratings").doc(bookId).collection("votes").get();
-    const likes = ratingsSnap.docs.filter(d => d.data().vote === "like").length;
-    const dislikes = ratingsSnap.docs.filter(d => d.data().vote === "dislike").length;
-    let userVote = null;
-    if (userUid) {
-      const userVoteDoc = await db.collection("ratings").doc(bookId).collection("votes").doc(userUid).get();
-      userVote = userVoteDoc.exists ? userVoteDoc.data().vote : null;
+    try {
+        // Verify with Pi API (sandbox/mainnet)
+        const response = await fetch(`https://api.minepi.com/v2/accounts/verify`, {
+            method: "POST",
+            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+        });
+        if (!response.ok) throw new Error("Token invalid");
+        const data = await response.json();
+        req.user = { username: data.username, uid: data.uid };
+        next();
+    } catch (err) {
+        return res.status(401).json({ error: "Unauthorized: " + err.message });
     }
-    res.json({ success: true, likes, dislikes, userVote });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+}
+
+// ====== Test Server ======
+app.get("/", (req,res)=>res.send("✅ Backend running"));
+
+// ====== Endpoints ======
+
+// GET all books
+app.get("/books", async (req,res)=>{
+    try {
+        const snap = await db.collection("books").get();
+        const books = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        res.json({ success: true, books });
+    } catch(err){
+        res.status(500).json({ error: err.message });
+    }
 });
 
-// Get user purchases (جلب المشتريات من Firebase)
-app.post("/purchases", async (req, res) => {
-  const { userUid } = req.body;
-  if (!userUid || !db) return res.status(400).json({ error: "missing userUid" });
+// POST: Save book
+app.post("/save-book", verifyPiToken, async (req,res)=>{
+    const { title, price, description, language, pageCount, cover, pdf } = req.body;
+    if (!title || !price || !cover || !pdf) return res.status(400).json({ error: "Missing fields" });
 
-  try {
-    const purchasesSnap = await db.collection("purchases").doc(userUid).collection("books").get();
-    const purchases = purchasesSnap.docs.map(doc => doc.id);
-    const books = await Promise.all(purchases.map(async (bookId) => {
-      const bookSnap = await db.collection("books").doc(bookId).get();
-      return { id: bookId, ...bookSnap.data() };
-    }));
-    res.json({ success: true, purchases: books });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+    try {
+        const docRef = await db.collection("books").add({
+            title, price: Number(price), description: description||"", language: language||"", pageCount: pageCount||"Unknown",
+            cover, pdf, owner: req.user.username, ownerUid: req.user.uid, salesCount: 0, createdAt: Date.now()
+        });
+        res.json({ success: true, bookId: docRef.id });
+    } catch(err){
+        res.status(500).json({ error: err.message });
+    }
 });
 
-// Get user sales (جلب المبيعات من Firebase)
-app.post("/sales", async (req, res) => {
-  const { username } = req.body;
-  if (!username || !db) return res.status(400).json({ error: "missing username" });
+// POST: Approve payment
+app.post("/approve-payment", verifyPiToken, async (req,res)=>{
+    const { paymentId } = req.body;
+    if (!paymentId) return res.status(400).json({ error: "paymentId missing" });
 
-  try {
-    const snap = await db.collection("books").where("owner", "==", username).get();
-    const sales = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    res.json({ success: true, sales });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+    try {
+        const response = await fetch(`https://api.minepi.com/v2/payments/${paymentId}/approve`, {
+            method: "POST",
+            headers: { Authorization: `Key ${PI_API_KEY}` }
+        });
+        if (!response.ok) throw new Error(await response.text());
+        res.json({ success:true });
+    } catch(err){
+        res.status(500).json({ error: err.message });
+    }
 });
 
-const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`Server running on port ${port} 🚀`));
+// POST: Complete payment
+app.post("/complete-payment", verifyPiToken, async (req,res)=>{
+    const { paymentId, txid, bookId } = req.body;
+    if (!paymentId || !txid || !bookId) return res.status(400).json({ error: "Missing data" });
+
+    try {
+        const response = await fetch(`https://api.minepi.com/v2/payments/${paymentId}/complete`, {
+            method: "POST",
+            headers: { Authorization: `Key ${PI_API_KEY}` },
+            body: JSON.stringify({ txid })
+        });
+        if (!response.ok) throw new Error(await response.text());
+
+        const bookRef = db.collection("books").doc(bookId);
+        await db.runTransaction(async (t)=>{
+            t.update(bookRef, { salesCount: admin.firestore.FieldValue.increment(1) });
+        });
+
+        const bookSnap = await bookRef.get();
+        res.json({ success:true, pdfUrl: bookSnap.data().pdf });
+    } catch(err){
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST: Get user purchases
+app.post("/purchases", verifyPiToken, async (req,res)=>{
+    try {
+        const purchasesSnap = await db.collection("purchases").doc(req.user.uid).collection("books").get();
+        const purchases = purchasesSnap.docs.map(doc=>doc.id);
+        const books = await Promise.all(purchases.map(async bookId=>{
+            const snap = await db.collection("books").doc(bookId).get();
+            return { id: bookId, ...snap.data() };
+        }));
+        res.json({ success:true, purchases: books });
+    } catch(err){
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST: Get user sales
+app.post("/sales", verifyPiToken, async (req,res)=>{
+    try {
+        const snap = await db.collection("books").where("ownerUid","==",req.user.uid).get();
+        const sales = snap.docs.map(doc=>({ id: doc.id, ...doc.data() }));
+        res.json({ success:true, sales });
+    } catch(err){
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST: Reset sales (admin or owner)
+app.post("/reset-sales", verifyPiToken, async (req,res)=>{
+    try {
+        const snap = await db.collection("books").where("ownerUid","==",req.user.uid).get();
+        const batch = db.batch();
+        snap.forEach(doc=>batch.update(doc.ref,{ salesCount:0 }));
+        await batch.commit();
+        res.json({ success:true });
+    } catch(err){
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST: Get PDF after purchase
+app.post("/get-pdf", verifyPiToken, async (req,res)=>{
+    const { bookId } = req.body;
+    try {
+        const purchaseSnap = await db.collection("purchases").doc(req.user.uid).collection("books").doc(bookId).get();
+        if (!purchaseSnap.exists) return res.status(403).json({ error: "Not purchased" });
+        const bookSnap = await db.collection("books").doc(bookId).get();
+        res.json({ success:true, pdfUrl: bookSnap.data().pdf });
+    } catch(err){
+        res.status(500).json({ error: err.message });
+    }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, ()=>console.log(`🚀 Server running on port ${PORT}`));
