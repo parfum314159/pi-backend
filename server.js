@@ -7,7 +7,6 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
-// PI API KEY
 const PI_API_KEY = process.env.PI_API_KEY;
 if (!PI_API_KEY) {
   console.error("❌ PI_API_KEY is missing!");
@@ -31,13 +30,12 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT) {
   console.warn("FIREBASE_SERVICE_ACCOUNT not set");
 }
 
-// Root
 app.get("/", (req, res) => res.send("Spicy Library Backend is running ✅"));
 
-// Approve
+// Approve payment
 app.post("/approve-payment", async (req, res) => {
   const { paymentId } = req.body;
-  if (!paymentId) return res.status(400).json({ error: "missing paymentId" });
+  if (!paymentId) return res.status(400).json({ error: "paymentId missing" });
 
   try {
     const response = await fetch(`https://api.minepi.com/v2/payments/${paymentId}/approve`, {
@@ -51,7 +49,7 @@ app.post("/approve-payment", async (req, res) => {
   }
 });
 
-// Complete + update Firestore
+// Complete payment
 app.post("/complete-payment", async (req, res) => {
   const { paymentId, txid, bookId, userUid } = req.body;
   if (!paymentId || !txid || !bookId || !userUid || !db) {
