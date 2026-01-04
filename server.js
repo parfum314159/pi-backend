@@ -42,6 +42,23 @@ app.get("/books", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+async function authMiddleware(req, res, next) {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "No token provided" });
+  }
+
+  const idToken = authHeader.split("Bearer ")[1];
+
+  try {
+    const decoded = await admin.auth().verifyIdToken(idToken);
+    req.user = decoded; // يحتوي uid
+    next();
+  } catch (err) {
+    return res.status(401).json({ error: "Invalid token" });
+  }
+}
 
 // ==== الـ endpoints الجديدة (انسخها كلها وضعها هنا، قبل app.listen(port) ====
 
@@ -161,3 +178,4 @@ app.post("/reset-sales", async (req, res) => {
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`Server on port ${port}`));
+
