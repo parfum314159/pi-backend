@@ -142,6 +142,8 @@ app.post("/reset-sales", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+const port = process.env.PORT || 3000;
 // Approve payment
 app.post("/approve-payment", async (req, res) => {
   const { paymentId } = req.body;
@@ -253,8 +255,8 @@ app.post("/reset-sales", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`Server on port ${port}`));
+
 
 
 
