@@ -110,29 +110,47 @@ app.post("/book-ratings", async (req, res) => {
 });
 
 /* ================= PAYMENTS ================= */
+
+// ✅ 1) APPROVE PAYMENT
 app.post("/approve-payment", async (req, res) => {
   try {
     const { paymentId } = req.body;
+    if (!paymentId) {
+      return res.status(400).json({ error: "Missing paymentId" });
+    }
+
     const r = await fetch(`${PI_API_URL}/payments/${paymentId}/approve`, {
       method: "POST",
       headers: { Authorization: `Key ${PI_API_KEY}` }
     });
+
     if (!r.ok) throw new Error(await r.text());
+
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
+
+// ✅ 2) COMPLETE PAYMENT (NORMAL FLOW)
 app.post("/complete-payment", async (req, res) => {
   try {
-   // 🔒 PREVENT DUPLICATE COMPLETION
-const completedRef = db.collection("completed_payments").doc(paymentId);
-const completedSnap = await completedRef.get();
+    const { paymentId, txid, bookId, userUid } = req.body;
 
-if (completedSnap.exists) {
-  return res.json({ success: true, message: "Payment already completed" });
-}
+    if (!paymentId || !txid || !bookId || !userUid) {
+      return res.status(400).json({ error: "Missing data" });
+    }
+
+    // 🔒 منع التكرار
+    const completedRef = db.collection("completed_payments").doc(paymentId);
+    const completedSnap = await completedRef.get();
+    if (completedSnap.exists) {
+      return res.json({ success: true, message: "Payment already completed" });
+    }
+
+    // 🔹 إكمال الدفع في Pi
+    const r = await fetch(`${PI_API_URL}/payments/${paymentId}/complete`, {
       method: "POST",
       headers: {
         Authorization: `Key ${PI_API_KEY}`,
@@ -140,8 +158,82 @@ if (completedSnap.exists) {
       },
       body: JSON.stringify({ txid })
     });
+
     if (!r.ok) throw new Error(await r.text());
 
+    // 🔹 تحديث المبيعات
+    const bookRef = db.collection("books").doc(bookId);
+    await bookRef.update({
+      salesCount: admin.firestore.FieldValue.increment(1)
+    });
+
+    // 🔹 تسجيل الشراء
+    await db
+      .collection("purchases")
+      .doc(userUid)
+      .collection("books")
+      .doc(bookId)
+      .set({ purchasedAt: Date.now() });
+
+    // 🔹 تسجيل أن الدفع اكتمل
+    await completedRef.set({
+      paymentId,
+      bookId,
+      userUid,
+      completedAt: Date.now()
+    });
+
+    const bookSnap = await bookRef.get();
+    res.json({ success: true, pdfUrl: bookSnap.data().pdf });
+
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+
+// ✅ 3) HANDLE PENDING PAYMENT (AUTO RECOVERY)
+async function handlePendingPayment(paymentId) {
+  try {
+    const r = await fetch(`${PI_API_URL}/payments/${paymentId}`, {
+      method: "GET",
+      headers: { Authorization: `Key ${PI_API_KEY}` }
+    });
+    if (!r.ok) throw new Error(await r.text());
+
+    const paymentData = await r.json();
+
+    if (!paymentData.txid) {
+      console.log("⏳ Payment still pending:", paymentId);
+      return;
+    }
+
+    const metadata = paymentData.metadata || {};
+    const { bookId, userUid } = metadata;
+
+    if (!bookId || !userUid) {
+      console.log("⚠️ Missing metadata for payment:", paymentId);
+      return;
+    }
+
+    // 🔒 منع التكرار
+    const completedRef = db.collection("completed_payments").doc(paymentId);
+    const completedSnap = await completedRef.get();
+    if (completedSnap.exists) return;
+
+    // 🔹 إكمال الدفع
+    const completeRes = await fetch(`${PI_API_URL}/payments/${paymentId}/complete`, {
+      method: "POST",
+      headers: {
+        Authorization: `Key ${PI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ txid: paymentData.txid })
+    });
+
+    if (!completeRes.ok) throw new Error(await completeRes.text());
+
+    // 🔹 تحديث قاعدة البيانات
     const bookRef = db.collection("books").doc(bookId);
     await bookRef.update({
       salesCount: admin.firestore.FieldValue.increment(1)
@@ -154,69 +246,32 @@ if (completedSnap.exists) {
       .doc(bookId)
       .set({ purchasedAt: Date.now() });
 
-    const book = await bookRef.get();
-    res.json({ success: true, pdfUrl: book.data().pdf });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-async function handlePendingPayment(paymentId) {
-  try {
-    // جلب بيانات الدفع
-    const r = await fetch(`${PI_API_URL}/payments/${paymentId}`, {
-      method: "GET",
-      headers: { Authorization: `Key ${PI_API_KEY}` }
-    });
-    if (!r.ok) throw new Error(await r.text());
-    const paymentData = await r.json();
-
-    if (!paymentData.txid) {
-      console.log("⚠️ Payment not ready yet or missing txid:", paymentId);
-      return;
-    }
-
-    // Metadata fallback
-    const metadata = paymentData.metadata || {};
-    const bookId = metadata.bookId;
-    const userUid = metadata.userUid;
-
-    if (!bookId || !userUid) {
-      console.log("⚠️ Missing metadata for pending payment:", paymentId);
-      return;
-    }
-
-    // إكمال الدفع
-    const completeRes = await fetch(`${PI_API_URL}/payments/${paymentId}/complete`, {
-      method: "POST",
-      headers: {
-        Authorization: `Key ${PI_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ txid: paymentData.txid })
-    });
-    if (!completeRes.ok) throw new Error(await completeRes.text());
-
-    // تحديث قاعدة البيانات
-    const bookRef = db.collection("books").doc(bookId);
-    await bookRef.update({ salesCount: admin.firestore.FieldValue.increment(1) });
-    await db.collection("purchases").doc(userUid).collection("books").doc(bookId).set({
-      purchasedAt: Date.now()
+    await completedRef.set({
+      paymentId,
+      bookId,
+      userUid,
+      completedAt: Date.now()
     });
 
     console.log("✅ Pending payment resolved:", paymentId);
 
   } catch (e) {
-    console.log("⚠️ Failed to resolve pending payment:", paymentId, e.message);
+    console.error("⚠️ Failed to resolve pending payment:", paymentId, e.message);
   }
 }
 
+
+// ✅ 4) RESOLVE PENDING ENDPOINT
 app.post("/resolve-pending", async (req, res) => {
   try {
     const { paymentId } = req.body;
-    if (!paymentId) return res.status(400).json({ error: "Missing paymentId" });
+    if (!paymentId) {
+      return res.status(400).json({ error: "Missing paymentId" });
+    }
 
     await handlePendingPayment(paymentId);
     res.json({ success: true });
+
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -299,11 +354,8 @@ app.post("/reset-sales", async (req, res) => {
 /* ================= PAYOUT REQUEST ================= */
 app.post("/request-payout", async (req, res) => {
   try {
-    if (booksSnap.empty) {
-  return res.status(400).json({ error: "No books found" });
-}
-
     const { username, walletAddress } = req.body;
+
     if (!username || !walletAddress) {
       return res.status(400).json({ error: "Missing data" });
     }
@@ -311,14 +363,15 @@ app.post("/request-payout", async (req, res) => {
     const userRef = db.collection("users").doc(username);
     const userSnap = await userRef.get();
 
-    if (userSnap.exists && userSnap.data().hasPendingPayout) {
-      return res.status(400).json({ error: "Payout already pending" });
-    }
-
     // 🔹 جلب كتب المستخدم
-    const booksSnap = await db.collection("books")
+    const booksSnap = await db
+      .collection("books")
       .where("owner", "==", username)
       .get();
+
+    if (booksSnap.empty) {
+      return res.status(400).json({ error: "No books found" });
+    }
 
     let totalEarnings = 0;
     const batch = db.batch();
@@ -326,43 +379,53 @@ app.post("/request-payout", async (req, res) => {
     booksSnap.forEach(doc => {
       const book = doc.data();
       const sales = book.salesCount || 0;
-      const profit = Number((sales * book.price * 0.7).toFixed(2));
+      const price = book.price || 0;
+
+      // 🔹 أرباح المؤلف (70%)
+      const profit = Number((sales * price * 0.7).toFixed(2));
       totalEarnings += profit;
 
-      // تصفير المبيعات
+      // 🔹 تصفير المبيعات (سيتم بعد إنشاء الطلب)
       batch.update(doc.ref, { salesCount: 0 });
     });
 
-    if (totalEarnings < 5) {
-      if (userSnap.exists && userSnap.data().lastPayoutAmount === totalEarnings) {
-  return res.status(400).json({ error: "Duplicate payout attempt" });
-}
+    const payoutAmount = Number(totalEarnings.toFixed(2));
+
+    // 🔒 الحد الأدنى للسحب
+    if (payoutAmount < 5) {
       return res.status(400).json({ error: "Minimum payout is 5 Pi" });
     }
 
-    // 🔹 إنشاء طلب payout
-   await db.collection("payout_requests").add({
-  username,
-  walletAddress,
-  amount: Number(totalEarnings.toFixed(2)),
-  currency: "PI",
-  status: "pending",
-  requestedAt: admin.firestore.Timestamp.now(),
-  approvedAt: null
-});
+    // 🔹 منع إرسال نفس المبلغ القديم فقط
+    if (userSnap.exists && userSnap.data().lastPayoutAmount === payoutAmount) {
+      return res.status(400).json({ error: "Duplicate payout attempt" });
+    }
 
-    // 🔹 قفل المستخدم
-   await userRef.set({
-  hasPendingPayout: true,
-  lastPayoutAmount: Number(totalEarnings.toFixed(2)),
-  lastPayoutAt: Date.now()
-}, { merge: true });
-    
+    const now = admin.firestore.Timestamp.now();
+
+    // 🔹 إنشاء طلب payout
+    await db.collection("payout_requests").add({
+      username,
+      walletAddress,
+      amount: payoutAmount,
+      currency: "PI",
+      status: "pending",
+      requestedAt: now,
+      approvedAt: null
+    });
+
+    // 🔹 تحديث بيانات المستخدم فقط مع آخر مبلغ وتاريخ
+    await userRef.set({
+      lastPayoutAmount: payoutAmount,
+      lastPayoutAt: now
+    }, { merge: true });
+
+    // 🔹 تصفير الأرباح بعد إنشاء الطلب
     await batch.commit();
 
     res.json({
       success: true,
-      amount: Number(totalEarnings.toFixed(2))
+      amount: payoutAmount
     });
 
   } catch (err) {
@@ -376,6 +439,7 @@ app.post("/request-payout", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Backend running on port", PORT));
+
 
 
 
