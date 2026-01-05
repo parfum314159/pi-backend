@@ -156,6 +156,40 @@ app.post("/complete-payment", async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+async function handlePendingPayment(paymentId) {
+  try {
+    // حاول الموافقة أولاً
+    await fetch(`${PI_API_URL}/payments/${paymentId}/approve`, {
+      method: "POST",
+      headers: { Authorization: `Key ${PI_API_KEY}` }
+    });
+
+    // ثم إكمال الدفع تلقائياً
+    await fetch(`${PI_API_URL}/payments/${paymentId}/complete`, {
+      method: "POST",
+      headers: {
+        Authorization: `Key ${PI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ txid: "auto-resolve" }) // txid وهمي للتجاوز
+    });
+
+    console.log("✅ Pending payment resolved:", paymentId);
+  } catch (e) {
+    console.log("⚠️ Failed to resolve pending payment:", paymentId, e.message);
+  }
+}
+app.post("/resolve-pending", async (req, res) => {
+  try {
+    const { paymentId } = req.body;
+    if (!paymentId) return res.status(400).json({ error: "Missing paymentId" });
+
+    await handlePendingPayment(paymentId);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 /* ================= PURCHASES ================= */
 app.post("/my-purchases", async (req, res) => {
@@ -229,3 +263,4 @@ app.post("/reset-sales", async (req, res) => {
 /* ================= START ================= */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Backend running on port", PORT));
+
