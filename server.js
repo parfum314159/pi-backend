@@ -1,103 +1,51 @@
 import express from "express";
+import admin from "firebase-admin";
 import fetch from "node-fetch";
 import cors from "cors";
-import admin from "firebase-admin";
 
+/* ================= APP ================= */
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
-/* ================= ENV ================= */
-const PI_API_KEY = process.env.PI_API_KEY;
-if (!PI_API_KEY) {
-  console.error("❌ PI_API_KEY is missing");
-  process.exit(1);
-}
-
 /* ================= FIREBASE ================= */
-let db = null;
-try {
-  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount),
-    });
-    db = admin.firestore();
-    console.log("✅ Firebase initialized");
-  } else {
-    console.error("❌ FIREBASE_SERVICE_ACCOUNT missing");
-  }
-} catch (e) {
-  console.error("❌ Firebase init error:", e.message);
-}
+admin.initializeApp({
+  credential: admin.credential.cert(
+    JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
+  )
+});
+const db = admin.firestore();
 
-/* ================= PI PENDING HANDLER ================= */
-async function handleIncompletePayment(paymentId) {
-  try {
-    // approve
-    await fetch(`https://api.minepi.com/v2/payments/${paymentId}/approve`, {
-      method: "POST",
-      headers: { Authorization: `Key ${PI_API_KEY}` },
-    });
-
-    // complete (force)
-    await fetch(`https://api.minepi.com/v2/payments/${paymentId}/complete`, {
-      method: "POST",
-      headers: {
-        Authorization: `Key ${PI_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ txid: "auto-resolve" }),
-    });
-
-    console.log("✅ Pending payment resolved:", paymentId);
-  } catch (e) {
-    console.log("⚠️ Pending resolve failed:", paymentId, e.message);
-  }
-}
+/* ================= PI ================= */
+const PI_API_KEY = process.env.PI_API_KEY;
+const PI_API_URL = "https://api.minepi.com/v2";
 
 /* ================= ROOT ================= */
-app.get("/", (req, res) => {
-  res.send("Backend running");
-});
+app.get("/", (_, res) => res.send("Backend running"));
 
 /* ================= BOOKS ================= */
-app.get("/books", async (req, res) => {
-  if (!db) return res.status(500).json({ error: "Firestore not ready" });
+app.get("/books", async (_, res) => {
   try {
-    const snap = await db
-      .collection("books")
-      .orderBy("createdAt", "desc")
-      .get();
-
-    const books = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const snap = await db.collection("books").orderBy("createdAt", "desc").get();
+    const books = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     res.json({ success: true, books });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ success: false, error: e.message });
   }
 });
 
 /* ================= SAVE BOOK ================= */
 app.post("/save-book", async (req, res) => {
-  if (!db) return res.status(500).json({ error: "Firestore not ready" });
-
-  const {
-    title,
-    price,
-    description,
-    language,
-    pageCount,
-    cover,
-    pdf,
-    owner,
-    ownerUid,
-  } = req.body;
-
-  if (!title || !price || !cover || !pdf || !owner || !ownerUid) {
-    return res.status(400).json({ error: "missing data" });
-  }
-
   try {
+    const {
+      title, price, description, language, pageCount,
+      cover, pdf, owner, ownerUid
+    } = req.body;
+
+    if (!title || !price || !cover || !pdf || !owner || !ownerUid) {
+      return res.status(400).json({ error: "Missing data" });
+    }
+
     const doc = await db.collection("books").add({
       title,
       price: Number(price),
@@ -109,7 +57,7 @@ app.post("/save-book", async (req, res) => {
       owner,
       ownerUid,
       salesCount: 0,
-      createdAt: Date.now(),
+      createdAt: Date.now()
     });
 
     res.json({ success: true, bookId: doc.id });
@@ -118,24 +66,20 @@ app.post("/save-book", async (req, res) => {
   }
 });
 
-/* ================= APPROVE PAYMENT ================= */
-app.post("/approve-payment", async (req, res) => {
+/* ================= RATINGS ================= */
+app.post("/rate-book", async (req, res) => {
   try {
-    const { paymentId } = req.body;
-    if (!paymentId)
-      return res.status(400).json({ error: "missing paymentId" });
-
-    const r = await fetch(
-      `https://api.minepi.com/v2/payments/${paymentId}/approve`,
-      {
-        method: "POST",
-        headers: { Authorization: `Key ${PI_API_KEY}` },
-      }
-    );
-
-    if (!r.ok) {
-      await handleIncompletePayment(paymentId);
+    const { bookId, voteType, userUid } = req.body;
+    if (!bookId || !voteType || !userUid) {
+      return res.status(400).json({ error: "Missing data" });
     }
+
+    await db
+      .collection("ratings")
+      .doc(bookId)
+      .collection("votes")
+      .doc(userUid)
+      .set({ vote: voteType, votedAt: Date.now() });
 
     res.json({ success: true });
   } catch (e) {
@@ -143,48 +87,93 @@ app.post("/approve-payment", async (req, res) => {
   }
 });
 
-/* ================= COMPLETE PAYMENT ================= */
-app.post("/complete-payment", async (req, res) => {
-  if (!db) return res.status(500).json({ error: "Firestore not ready" });
-
-  const { paymentId, txid, bookId, userUid } = req.body;
-  if (!paymentId || !txid || !bookId || !userUid) {
-    return res.status(400).json({ error: "missing data" });
-  }
-
+app.post("/book-ratings", async (req, res) => {
   try {
-    const r = await fetch(
-      `https://api.minepi.com/v2/payments/${paymentId}/complete`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Key ${PI_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ txid }),
-      }
-    );
+    const { bookId, userUid } = req.body;
+    const snap = await db
+      .collection("ratings")
+      .doc(bookId)
+      .collection("votes")
+      .get();
 
-    if (!r.ok) {
-      await handleIncompletePayment(paymentId);
-    }
+    let likes = 0, dislikes = 0, userVote = null;
+    snap.forEach(d => {
+      if (d.data().vote === "like") likes++;
+      if (d.data().vote === "dislike") dislikes++;
+      if (d.id === userUid) userVote = d.data().vote;
+    });
+
+    res.json({ success: true, likes, dislikes, userVote });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* ================= PAYMENTS ================= */
+app.post("/approve-payment", async (req, res) => {
+  try {
+    const { paymentId } = req.body;
+    const r = await fetch(`${PI_API_URL}/payments/${paymentId}/approve`, {
+      method: "POST",
+      headers: { Authorization: `Key ${PI_API_KEY}` }
+    });
+    if (!r.ok) throw new Error(await r.text());
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/complete-payment", async (req, res) => {
+  try {
+    const { paymentId, txid, bookId, userUid } = req.body;
+
+    const r = await fetch(`${PI_API_URL}/payments/${paymentId}/complete`, {
+      method: "POST",
+      headers: {
+        Authorization: `Key ${PI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ txid })
+    });
+    if (!r.ok) throw new Error(await r.text());
 
     const bookRef = db.collection("books").doc(bookId);
-    const purchaseRef = db
+    await bookRef.update({
+      salesCount: admin.firestore.FieldValue.increment(1)
+    });
+
+    await db
       .collection("purchases")
       .doc(userUid)
       .collection("books")
-      .doc(bookId);
+      .doc(bookId)
+      .set({ purchasedAt: Date.now() });
 
-    await db.runTransaction(async (t) => {
-      t.update(bookRef, {
-        salesCount: admin.firestore.FieldValue.increment(1),
-      });
-      t.set(purchaseRef, { purchasedAt: Date.now() });
-    });
+    const book = await bookRef.get();
+    res.json({ success: true, pdfUrl: book.data().pdf });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
-    const bookSnap = await bookRef.get();
-    res.json({ success: true, pdfUrl: bookSnap.data().pdf });
+/* ================= PURCHASES ================= */
+app.post("/my-purchases", async (req, res) => {
+  try {
+    const { userUid } = req.body;
+    const snap = await db
+      .collection("purchases")
+      .doc(userUid)
+      .collection("books")
+      .get();
+
+    const books = [];
+    for (const d of snap.docs) {
+      const b = await db.collection("books").doc(d.id).get();
+      if (b.exists) books.push({ id: b.id, ...b.data() });
+    }
+
+    res.json({ success: true, books });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -192,23 +181,17 @@ app.post("/complete-payment", async (req, res) => {
 
 /* ================= GET PDF ================= */
 app.post("/get-pdf", async (req, res) => {
-  if (!db) return res.status(500).json({ error: "Firestore not ready" });
-
-  const { bookId, userUid } = req.body;
-  if (!bookId || !userUid) {
-    return res.status(400).json({ error: "missing data" });
-  }
-
   try {
-    const purchase = await db
+    const { bookId, userUid } = req.body;
+
+    const p = await db
       .collection("purchases")
       .doc(userUid)
       .collection("books")
       .doc(bookId)
       .get();
 
-    if (!purchase.exists)
-      return res.status(403).json({ error: "not purchased" });
+    if (!p.exists) return res.status(403).json({ error: "Not purchased" });
 
     const book = await db.collection("books").doc(bookId).get();
     res.json({ success: true, pdfUrl: book.data().pdf });
@@ -217,38 +200,13 @@ app.post("/get-pdf", async (req, res) => {
   }
 });
 
-/* ================= RATE BOOK ================= */
-app.post("/rate-book", async (req, res) => {
-  if (!db) return res.status(500).json({ error: "Firestore not ready" });
-
-  const { bookId, voteType, userUid } = req.body;
-  if (!bookId || !voteType || !userUid) {
-    return res.status(400).json({ error: "missing data" });
-  }
-
+/* ================= SALES ================= */
+app.post("/my-sales", async (req, res) => {
   try {
-    await db
-      .collection("ratings")
-      .doc(bookId)
-      .collection("votes")
-      .doc(userUid)
-      .set({
-        vote: voteType,
-        votedAt: Date.now(),
-      });
-
-    res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-/* ================= RESOLVE PENDING (MANUAL) ================= */
-app.post("/resolve-pending", async (req, res) => {
-  try {
-    const { paymentId } = req.body;
-    await handleIncompletePayment(paymentId);
-    res.json({ success: true });
+    const { username } = req.body;
+    const snap = await db.collection("books").where("owner", "==", username).get();
+    const books = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    res.json({ success: true, books });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -256,23 +214,12 @@ app.post("/resolve-pending", async (req, res) => {
 
 /* ================= RESET SALES ================= */
 app.post("/reset-sales", async (req, res) => {
-  if (!db) return res.status(500).json({ error: "Firestore not ready" });
-
-  const { username } = req.body;
-  if (!username) {
-    return res.status(400).json({ error: "missing username" });
-  }
-
   try {
-    const snap = await db
-      .collection("books")
-      .where("owner", "==", username)
-      .get();
-
+    const { username } = req.body;
+    const snap = await db.collection("books").where("owner", "==", username).get();
     const batch = db.batch();
-    snap.forEach((d) => batch.update(d.ref, { salesCount: 0 }));
+    snap.forEach(d => batch.update(d.ref, { salesCount: 0 }));
     await batch.commit();
-
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -280,7 +227,5 @@ app.post("/reset-sales", async (req, res) => {
 });
 
 /* ================= START ================= */
-const port = process.env.PORT || 10000;
-app.listen(port, () =>
-  console.log(`🚀 Backend running on port ${port}`)
-);
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log("Backend running on port", PORT));
