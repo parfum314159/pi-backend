@@ -286,6 +286,28 @@ app.post("/reset-sales", async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+/* ================= PAYOUT REQUEST ================= */
+app.post("/request-payout", async (req, res) => {
+  try {
+    const { walletAddress, username } = req.body;
+
+    if (!walletAddress || !username) {
+      return res.status(400).json({ error: "Missing data" });
+    }
+
+    // نحفظ الطلب فقط (يدوي)
+    await db.collection("payout_requests").add({
+      username,
+      walletAddress,
+      status: "pending",
+      createdAt: Date.now()
+    });
+
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 /* ================= START ================= */
 // حفظ الدفع كـ pending عند approve
@@ -349,6 +371,7 @@ app.get("/pending-payments", async (req, res) => {
 });
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Backend running on port", PORT));
+
 
 
 
