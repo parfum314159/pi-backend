@@ -158,27 +158,47 @@ app.post("/complete-payment", async (req, res) => {
 });
 async function handlePendingPayment(paymentId) {
   try {
-    // حاول الموافقة أولاً
-    await fetch(`${PI_API_URL}/payments/${paymentId}/approve`, {
-      method: "POST",
+    // خطوة 1: جلب بيانات الدفع من Pi
+    const r = await fetch(`${PI_API_URL}/payments/${paymentId}`, {
+      method: "GET",
       headers: { Authorization: `Key ${PI_API_KEY}` }
     });
+    if (!r.ok) throw new Error(await r.text());
+    const paymentData = await r.json();
 
-    // ثم إكمال الدفع تلقائياً
-    await fetch(`${PI_API_URL}/payments/${paymentId}/complete`, {
-      method: "POST",
-      headers: {
-        Authorization: `Key ${PI_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ txid: "auto-resolve" }) // txid وهمي للتجاوز
-    });
+    // خطوة 2: إذا الدفع جاهز للإكمال (txid موجود)
+    if (paymentData && paymentData.txid) {
+      await fetch(`${PI_API_URL}/payments/${paymentId}/complete`, {
+        method: "POST",
+        headers: {
+          Authorization: `Key ${PI_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ txid: paymentData.txid })
+      });
 
-    console.log("✅ Pending payment resolved:", paymentId);
+      console.log("✅ Pending payment resolved:", paymentId);
+
+      // خطوة 3: تحديث قاعدة البيانات بعد إتمام الدفع
+      const { bookId, userUid } = paymentData.metadata; // metadata يجب أن يحتوي bookId وuserUid
+      const bookRef = db.collection("books").doc(bookId);
+      await bookRef.update({
+        salesCount: admin.firestore.FieldValue.increment(1)
+      });
+      await db
+        .collection("purchases")
+        .doc(userUid)
+        .collection("books")
+        .doc(bookId)
+        .set({ purchasedAt: Date.now() });
+    } else {
+      console.log("⚠️ Payment not ready yet or missing txid:", paymentId);
+    }
   } catch (e) {
     console.log("⚠️ Failed to resolve pending payment:", paymentId, e.message);
   }
 }
+
 app.post("/resolve-pending", async (req, res) => {
   try {
     const { paymentId } = req.body;
@@ -263,4 +283,5 @@ app.post("/reset-sales", async (req, res) => {
 /* ================= START ================= */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Backend running on port", PORT));
+
 
