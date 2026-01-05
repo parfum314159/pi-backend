@@ -34,6 +34,7 @@ app.get("/books", async (_, res) => {
   }
 });
 
+/* ================= SAVE BOOK ================= */
 app.post("/save-book", async (req, res) => {
   try {
     const { title, price, description, language, pageCount, cover, pdf, owner, ownerUid } = req.body;
@@ -42,17 +43,8 @@ app.post("/save-book", async (req, res) => {
     }
 
     const doc = await db.collection("books").add({
-      title,
-      price: Number(price),
-      description: description || "",
-      language: language || "",
-      pageCount: pageCount || "Unknown",
-      cover,
-      pdf,
-      owner,
-      ownerUid,
-      salesCount: 0,
-      createdAt: Date.now()
+      title, price: Number(price), description: description || "", language: language || "",
+      pageCount: pageCount || "Unknown", cover, pdf, owner, ownerUid, salesCount: 0, createdAt: Date.now()
     });
 
     res.json({ success: true, bookId: doc.id });
@@ -67,8 +59,9 @@ app.post("/rate-book", async (req, res) => {
     const { bookId, voteType, userUid } = req.body;
     if (!bookId || !voteType || !userUid) return res.status(400).json({ error: "Missing data" });
 
-    await db.collection("ratings").doc(bookId).collection("votes").doc(userUid)
-      .set({ vote: voteType, votedAt: Date.now() });
+    await db.collection("ratings").doc(bookId).collection("votes").doc(userUid).set({
+      vote: voteType, votedAt: Date.now()
+    });
 
     res.json({ success: true });
   } catch (e) {
@@ -97,103 +90,91 @@ app.post("/book-ratings", async (req, res) => {
 /* ================= PAYMENTS ================= */
 app.post("/approve-payment", async (req, res) => {
   try {
-    const { paymentId } = req.body;
-    if (!paymentId) return res.status(400).json({ error: "Missing paymentId" });
+    const { paymentId, bookId, userUid } = req.body;
+    if (!paymentId || !bookId || !userUid) return res.status(400).json({ error: "Missing data" });
+
+    // حفظ المعاملة كـ pending في حال لم يكتمل الدفع مباشرة
+    await db.collection("pendingPayments").doc(paymentId).set({ bookId, userUid, status: "pending", createdAt: Date.now() });
 
     const r = await fetch(`${PI_API_URL}/payments/${paymentId}/approve`, {
       method: "POST",
       headers: { Authorization: `Key ${PI_API_KEY}` }
     });
     if (!r.ok) throw new Error(await r.text());
+
     res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-async function handlePendingPayment(paymentData) {
+app.post("/complete-payment", async (req, res) => {
   try {
-    if (!paymentData.txid) {
-      console.log("⚠️ Payment not ready:", paymentData.id);
-      return false;
-    }
+    const { paymentId, txid, bookId, userUid } = req.body;
+    if (!paymentId || !txid || !bookId || !userUid) return res.status(400).json({ error: "Missing data" });
 
-    const metadata = paymentData.metadata || {};
-    const bookId = metadata.bookId;
-    const userUid = metadata.userUid;
+    const r = await fetch(`${PI_API_URL}/payments/${paymentId}/complete`, {
+      method: "POST",
+      headers: { Authorization: `Key ${PI_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ txid })
+    });
+    if (!r.ok) throw new Error(await r.text());
 
-    if (!bookId || !userUid) {
-      console.log("⚠️ Missing metadata:", paymentData.id);
-      return false;
-    }
+    const bookRef = db.collection("books").doc(bookId);
+    await bookRef.update({ salesCount: admin.firestore.FieldValue.increment(1) });
 
-    // إتمام الدفع
-    const completeRes = await fetch(`${PI_API_URL}/payments/${paymentData.id}/complete`, {
+    await db.collection("purchases").doc(userUid).collection("books").doc(bookId).set({ purchasedAt: Date.now() });
+
+    await db.collection("pendingPayments").doc(paymentId).delete(); // ✅ إزالة الدفع من المعلقين بعد إكماله
+
+    const book = await bookRef.get();
+    res.json({ success: true, pdfUrl: book.data().pdf });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/* ================= RESOLVE PENDING ================= */
+app.post("/resolve-pending", async (req, res) => {
+  try {
+    const { paymentId } = req.body;
+    if (!paymentId) return res.status(400).json({ error: "Missing paymentId" });
+
+    const doc = await db.collection("pendingPayments").doc(paymentId).get();
+    if (!doc.exists) return res.status(404).json({ error: "Pending payment not found" });
+
+    const { bookId, userUid } = doc.data();
+
+    // تحقق من المعاملة في Pi API
+    const r = await fetch(`${PI_API_URL}/payments/${paymentId}`);
+    const paymentData = await r.json();
+    if (!paymentData.txid) return res.status(400).json({ error: "Payment not ready yet" });
+
+    // أكمل الدفع
+    await fetch(`${PI_API_URL}/payments/${paymentId}/complete`, {
       method: "POST",
       headers: { Authorization: `Key ${PI_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({ txid: paymentData.txid })
     });
-    if (!completeRes.ok) throw new Error(await completeRes.text());
 
-    // تحديث DB
+    // تحديث قاعدة البيانات
     const bookRef = db.collection("books").doc(bookId);
     await bookRef.update({ salesCount: admin.firestore.FieldValue.increment(1) });
-    await db.collection("purchases").doc(userUid).collection("books").doc(bookId).set({
-      purchasedAt: Date.now()
-    });
+    await db.collection("purchases").doc(userUid).collection("books").doc(bookId).set({ purchasedAt: Date.now() });
 
-    console.log("✅ Pending payment resolved:", paymentData.id);
-    return true;
-  } catch (e) {
-    console.log("⚠️ Failed to resolve pending payment:", paymentData.id, e.message);
-    return false;
-  }
-}
+    await db.collection("pendingPayments").doc(paymentId).delete();
 
-// حل الدفع المعلق endpoint محمي
-app.post("/resolve-pending", async (req, res) => {
-  try {
-    const { paymentId, userUid } = req.body;
-    if (!paymentId || !userUid) return res.status(400).json({ error: "Missing data" });
-
-    // تحقق من أن المدفوعات تخص هذا المستخدم
-    const r = await fetch(`${PI_API_URL}/payments/${paymentId}`, {
-      method: "GET",
-      headers: { Authorization: `Key ${PI_API_KEY}` }
-    });
-    if (!r.ok) return res.status(500).json({ error: "Failed to fetch payment" });
-    const paymentData = await r.json();
-
-    if (paymentData.metadata?.userUid !== userUid) {
-      return res.status(403).json({ error: "Unauthorized" });
-    }
-
-    const result = await handlePendingPayment(paymentData);
-    res.json({ success: result });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// جلب كل المدفوعات المعلقة للمستخدم
+/* ================= GET PENDING PAYMENTS FOR USER ================= */
 app.get("/pending-payments", async (req, res) => {
   try {
     const userUid = req.query.userUid;
     if (!userUid) return res.status(400).json({ error: "Missing userUid" });
 
-    const r = await fetch(`${PI_API_URL}/payments?status=pending`, {
-      method: "GET",
-      headers: { Authorization: `Key ${PI_API_KEY}` }
-    });
-    if (!r.ok) throw new Error(await r.text());
-    const payments = await r.json();
+    const snap = await db.collection("pendingPayments").where("userUid", "==", userUid).get();
+    const pendingPayments = snap.docs.map(d => ({ id: d.id, ...d.data() }));
 
-    // فلترة المدفوعات التي تخص هذا المستخدم فقط
-    const userPending = payments.filter(p => p.metadata?.userUid === userUid);
-    res.json({ success: true, pendingPayments: userPending });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+    res.json({ success: true, pendingPayments });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 /* ================= PURCHASES ================= */
@@ -207,9 +188,7 @@ app.post("/my-purchases", async (req, res) => {
       if (b.exists) books.push({ id: b.id, ...b.data() });
     }
     res.json({ success: true, books });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 /* ================= GET PDF ================= */
@@ -218,11 +197,10 @@ app.post("/get-pdf", async (req, res) => {
     const { bookId, userUid } = req.body;
     const p = await db.collection("purchases").doc(userUid).collection("books").doc(bookId).get();
     if (!p.exists) return res.status(403).json({ error: "Not purchased" });
+
     const book = await db.collection("books").doc(bookId).get();
     res.json({ success: true, pdfUrl: book.data().pdf });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 /* ================= SALES ================= */
@@ -232,11 +210,10 @@ app.post("/my-sales", async (req, res) => {
     const snap = await db.collection("books").where("owner", "==", username).get();
     const books = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     res.json({ success: true, books });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+/* ================= RESET SALES ================= */
 app.post("/reset-sales", async (req, res) => {
   try {
     const { username } = req.body;
@@ -245,9 +222,7 @@ app.post("/reset-sales", async (req, res) => {
     snap.forEach(d => batch.update(d.ref, { salesCount: 0 }));
     await batch.commit();
     res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 /* ================= START ================= */
