@@ -126,9 +126,13 @@ app.post("/approve-payment", async (req, res) => {
 
 app.post("/complete-payment", async (req, res) => {
   try {
-    const { paymentId, txid, bookId, userUid } = req.body;
+   // 🔒 PREVENT DUPLICATE COMPLETION
+const completedRef = db.collection("completed_payments").doc(paymentId);
+const completedSnap = await completedRef.get();
 
-    const r = await fetch(`${PI_API_URL}/payments/${paymentId}/complete`, {
+if (completedSnap.exists) {
+  return res.json({ success: true, message: "Payment already completed" });
+}
       method: "POST",
       headers: {
         Authorization: `Key ${PI_API_KEY}`,
@@ -224,6 +228,12 @@ app.post("/my-purchases", async (req, res) => {
     const { userUid } = req.body;
     const snap = await db
       .collection("purchases")
+      await completedRef.set({
+  paymentId,
+  bookId,
+  userUid,
+  completedAt: Date.now()
+});
       .doc(userUid)
       .collection("books")
       .get();
@@ -289,6 +299,10 @@ app.post("/reset-sales", async (req, res) => {
 /* ================= PAYOUT REQUEST ================= */
 app.post("/request-payout", async (req, res) => {
   try {
+    if (booksSnap.empty) {
+  return res.status(400).json({ error: "No books found" });
+}
+
     const { username, walletAddress } = req.body;
     if (!username || !walletAddress) {
       return res.status(400).json({ error: "Missing data" });
@@ -312,7 +326,7 @@ app.post("/request-payout", async (req, res) => {
     booksSnap.forEach(doc => {
       const book = doc.data();
       const sales = book.salesCount || 0;
-      const profit = sales * book.price * 0.7;
+      const profit = Number((sales * book.price * 0.7).toFixed(2));
       totalEarnings += profit;
 
       // تصفير المبيعات
@@ -320,24 +334,30 @@ app.post("/request-payout", async (req, res) => {
     });
 
     if (totalEarnings < 5) {
+      if (userSnap.exists && userSnap.data().lastPayoutAmount === totalEarnings) {
+  return res.status(400).json({ error: "Duplicate payout attempt" });
+}
       return res.status(400).json({ error: "Minimum payout is 5 Pi" });
     }
 
     // 🔹 إنشاء طلب payout
-    await db.collection("payout_requests").add({
-      username,
-      walletAddress,
-      amount: Number(totalEarnings.toFixed(2)),
-      status: "pending",
-      requestedAt: Date.now(), // ⏱️ تاريخ الإرسال
-      approvedAt: null         // سيملأ لاحقًا
-    });
+   await db.collection("payout_requests").add({
+  username,
+  walletAddress,
+  amount: Number(totalEarnings.toFixed(2)),
+  currency: "PI",
+  status: "pending",
+  requestedAt: admin.firestore.Timestamp.now(),
+  approvedAt: null
+});
 
     // 🔹 قفل المستخدم
-    await userRef.set({
-      hasPendingPayout: true
-    }, { merge: true });
-
+   await userRef.set({
+  hasPendingPayout: true,
+  lastPayoutAmount: Number(totalEarnings.toFixed(2)),
+  lastPayoutAt: Date.now()
+}, { merge: true });
+    
     await batch.commit();
 
     res.json({
@@ -356,6 +376,7 @@ app.post("/request-payout", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Backend running on port", PORT));
+
 
 
 
