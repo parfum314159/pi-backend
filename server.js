@@ -289,25 +289,68 @@ app.post("/reset-sales", async (req, res) => {
 /* ================= PAYOUT REQUEST ================= */
 app.post("/request-payout", async (req, res) => {
   try {
-    const { walletAddress, username } = req.body;
-
-    if (!walletAddress || !username) {
+    const { username, walletAddress } = req.body;
+    if (!username || !walletAddress) {
       return res.status(400).json({ error: "Missing data" });
     }
 
-    // نحفظ الطلب فقط (يدوي)
+    const userRef = db.collection("users").doc(username);
+    const userSnap = await userRef.get();
+
+    if (userSnap.exists && userSnap.data().hasPendingPayout) {
+      return res.status(400).json({ error: "Payout already pending" });
+    }
+
+    // 🔹 جلب كتب المستخدم
+    const booksSnap = await db.collection("books")
+      .where("owner", "==", username)
+      .get();
+
+    let totalEarnings = 0;
+    const batch = db.batch();
+
+    booksSnap.forEach(doc => {
+      const book = doc.data();
+      const sales = book.salesCount || 0;
+      const profit = sales * book.price * 0.7;
+      totalEarnings += profit;
+
+      // تصفير المبيعات
+      batch.update(doc.ref, { salesCount: 0 });
+    });
+
+    if (totalEarnings < 5) {
+      return res.status(400).json({ error: "Minimum payout is 5 Pi" });
+    }
+
+    // 🔹 إنشاء طلب payout
     await db.collection("payout_requests").add({
       username,
       walletAddress,
+      amount: Number(totalEarnings.toFixed(2)),
       status: "pending",
-      createdAt: Date.now()
+      requestedAt: Date.now(), // ⏱️ تاريخ الإرسال
+      approvedAt: null         // سيملأ لاحقًا
     });
 
-    res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
+    // 🔹 قفل المستخدم
+    await userRef.set({
+      hasPendingPayout: true
+    }, { merge: true });
+
+    await batch.commit();
+
+    res.json({
+      success: true,
+      amount: Number(totalEarnings.toFixed(2))
+    });
+
+  } catch (err) {
+    console.error("Payout error:", err);
+    res.status(500).json({ error: "Server error" });
   }
 });
+
 
 /* ================= START ================= */
 // حفظ الدفع كـ pending عند approve
@@ -371,6 +414,7 @@ app.get("/pending-payments", async (req, res) => {
 });
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Backend running on port", PORT));
+
 
 
 
