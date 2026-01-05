@@ -158,7 +158,7 @@ app.post("/complete-payment", async (req, res) => {
 });
 async function handlePendingPayment(paymentId) {
   try {
-    // خطوة 1: جلب بيانات الدفع من Pi
+    // جلب بيانات الدفع
     const r = await fetch(`${PI_API_URL}/payments/${paymentId}`, {
       method: "GET",
       headers: { Authorization: `Key ${PI_API_KEY}` }
@@ -166,34 +166,41 @@ async function handlePendingPayment(paymentId) {
     if (!r.ok) throw new Error(await r.text());
     const paymentData = await r.json();
 
-    // خطوة 2: إذا الدفع جاهز للإكمال (txid موجود)
-    if (paymentData && paymentData.txid) {
-      await fetch(`${PI_API_URL}/payments/${paymentId}/complete`, {
-        method: "POST",
-        headers: {
-          Authorization: `Key ${PI_API_KEY}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ txid: paymentData.txid })
-      });
-
-      console.log("✅ Pending payment resolved:", paymentId);
-
-      // خطوة 3: تحديث قاعدة البيانات بعد إتمام الدفع
-      const { bookId, userUid } = paymentData.metadata; // metadata يجب أن يحتوي bookId وuserUid
-      const bookRef = db.collection("books").doc(bookId);
-      await bookRef.update({
-        salesCount: admin.firestore.FieldValue.increment(1)
-      });
-      await db
-        .collection("purchases")
-        .doc(userUid)
-        .collection("books")
-        .doc(bookId)
-        .set({ purchasedAt: Date.now() });
-    } else {
+    if (!paymentData.txid) {
       console.log("⚠️ Payment not ready yet or missing txid:", paymentId);
+      return;
     }
+
+    // Metadata fallback
+    const metadata = paymentData.metadata || {};
+    const bookId = metadata.bookId;
+    const userUid = metadata.userUid;
+
+    if (!bookId || !userUid) {
+      console.log("⚠️ Missing metadata for pending payment:", paymentId);
+      return;
+    }
+
+    // إكمال الدفع
+    const completeRes = await fetch(`${PI_API_URL}/payments/${paymentId}/complete`, {
+      method: "POST",
+      headers: {
+        Authorization: `Key ${PI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ txid: paymentData.txid })
+    });
+    if (!completeRes.ok) throw new Error(await completeRes.text());
+
+    // تحديث قاعدة البيانات
+    const bookRef = db.collection("books").doc(bookId);
+    await bookRef.update({ salesCount: admin.firestore.FieldValue.increment(1) });
+    await db.collection("purchases").doc(userUid).collection("books").doc(bookId).set({
+      purchasedAt: Date.now()
+    });
+
+    console.log("✅ Pending payment resolved:", paymentId);
+
   } catch (e) {
     console.log("⚠️ Failed to resolve pending payment:", paymentId, e.message);
   }
@@ -283,5 +290,6 @@ app.post("/reset-sales", async (req, res) => {
 /* ================= START ================= */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Backend running on port", PORT));
+
 
 
