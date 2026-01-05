@@ -11,7 +11,7 @@ app.use(express.json());
 /* ================= FIREBASE ADMIN ================= */
 admin.initializeApp({
   credential: admin.credential.cert(
-    JSON.parse(fs.readFileSync("./serviceAccountKey.json"))
+    JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
   )
 });
 
@@ -191,3 +191,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Backend running on port", PORT);
 });
+
