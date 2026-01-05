@@ -297,10 +297,6 @@ app.post("/request-payout", async (req, res) => {
     const userRef = db.collection("users").doc(username);
     const userSnap = await userRef.get();
 
-    if (userSnap.exists && userSnap.data().hasPendingPayout) {
-      return res.status(400).json({ error: "Payout already pending" });
-    }
-
     // 🔹 جلب كتب المستخدم
     const booksSnap = await db.collection("books")
       .where("owner", "==", username)
@@ -329,13 +325,14 @@ app.post("/request-payout", async (req, res) => {
       walletAddress,
       amount: Number(totalEarnings.toFixed(2)),
       status: "pending",
-      requestedAt: Date.now(), // ⏱️ تاريخ الإرسال
-      approvedAt: null         // سيملأ لاحقًا
+      requestedAt: Date.now(),
+      approvedAt: null
     });
 
-    // 🔹 قفل المستخدم
+    // 🔹 تحديث المستخدم فقط لإظهار آخر طلب
     await userRef.set({
-      hasPendingPayout: true
+      lastPayoutAt: Date.now(),
+      lastPayoutAmount: Number(totalEarnings.toFixed(2))
     }, { merge: true });
 
     await batch.commit();
@@ -414,6 +411,7 @@ app.get("/pending-payments", async (req, res) => {
 });
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Backend running on port", PORT));
+
 
 
 
