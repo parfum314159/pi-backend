@@ -137,11 +137,12 @@ app.post("/approve-payment", async (req, res) => {
 // 🔹 complete-payment (النسخة الصحيحة)
 app.post("/complete-payment", async (req, res) => {
   try {
-    const { paymentId, txid } = req.body;
+  const { paymentId } = req.body;
 
-    if (!paymentId || !txid) {
-      return res.status(400).json({ error: "Missing payment data" });
-    }
+if (!paymentId) {
+  return res.status(400).json({ error: "Missing paymentId" });
+}
+
 
     // 1️⃣ جلب بيانات الدفع من Pi
     const paymentRes = await fetch(`${PI_API_URL}/payments/${paymentId}`, {
@@ -154,6 +155,11 @@ app.post("/complete-payment", async (req, res) => {
     }
 
     const paymentData = await paymentRes.json();
+const txid = paymentData.txid;
+
+if (!txid) {
+  return res.status(400).json({ error: "Transaction not completed on Pi yet" });
+}
 
     // 2️⃣ استخراج البيانات من metadata (مصدر موثوق)
     const bookId = paymentData.metadata?.bookId;
@@ -406,6 +412,7 @@ app.post("/request-payout", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Backend running on port", PORT));
+
 
 
 
