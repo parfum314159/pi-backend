@@ -20,56 +20,6 @@ const db = admin.firestore();
 const PI_API_KEY = process.env.PI_API_KEY;
 const PI_API_URL = "https://api.minepi.com/v2";
 
-// ================= HANDLE PENDING PAYMENTS =================
-async function handlePendingPayment(paymentId) {
-  try {
-    const r = await fetch(`${PI_API_URL}/payments/${paymentId}`, {
-      method: "GET",
-      headers: { Authorization: `Key ${PI_API_KEY}` }
-    });
-
-    if (!r.ok) throw new Error(await r.text());
-    const paymentData = await r.json();
-
-    // إذا لم يكن هناك txid فلا نكمل
-    if (!paymentData.txid) return;
-
-    const bookId = paymentData.metadata?.bookId;
-    const userUid = paymentData.metadata?.userUid;
-
-    if (!bookId || !userUid) return;
-
-    // إكمال الدفع
-    await fetch(`${PI_API_URL}/payments/${paymentId}/complete`, {
-      method: "POST",
-      headers: {
-        Authorization: `Key ${PI_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ txid: paymentData.txid })
-    });
-
-    // تحديث Firestore
-    const bookRef = db.collection("books").doc(bookId);
-    await db.runTransaction(async (t) => {
-      t.update(bookRef, { salesCount: admin.firestore.FieldValue.increment(1) });
-      t.set(
-        db.collection("purchases").doc(userUid).collection("books").doc(bookId),
-        { purchasedAt: Date.now() }
-      );
-    });
-
-    // حذف الدفع من pending
-    await db.collection("pendingPayments").doc(paymentId).delete();
-
-    console.log("✅ Pending payment resolved:", paymentId);
-
-  } catch (e) {
-    console.log("⚠️ Pending resolve failed:", e.message);
-  }
-}
-
-
 /* ================= ROOT ================= */
 app.get("/", (_, res) => res.send("Backend running"));
 
@@ -392,35 +342,64 @@ app.post("/reset-sales", async (req, res) => {
 /* ================= PAYOUT REQUEST ================= */
 app.post("/request-payout", async (req, res) => {
   try {
-    const { userUid, username } = req.body;
-    if (!userUid || !username) return res.status(400).json({ error: "Missing user data" });
+    const { username, walletAddress } = req.body;
+    if (!username || !walletAddress) {
+      return res.status(400).json({ error: "Missing data" });
+    }
 
-    // تحقق من وجود أي كتاب للمستخدم (اختياري)
-    const userBooksSnap = await db.collection("books").where("ownerUid", "==", userUid).get();
-    if (userBooksSnap.empty) return res.status(404).json({ error: "User not found or no books" });
+    const userRef = db.collection("users").doc(username);
+    const userSnap = await userRef.get();
 
-    const amount = 1; // يمكن تحديد المبلغ أو حسابه حسب الأرباح
+    // 🔹 جلب كتب المستخدم
+    const booksSnap = await db.collection("books")
+      .where("owner", "==", username)
+      .get();
 
-    const response = await fetch(`${PI_API_URL}/payments`, {
-      method: "POST",
-      headers: { Authorization: `Key ${PI_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        amount,
-        memo: `Payout for ${username}`,
-        metadata: { userUid, username }
-      })
+    let totalEarnings = 0;
+    const batch = db.batch();
+
+    booksSnap.forEach(doc => {
+      const book = doc.data();
+      const sales = book.salesCount || 0;
+      const profit = sales * book.price * 0.7;
+      totalEarnings += profit;
+
+      // تصفير المبيعات
+      batch.update(doc.ref, { salesCount: 0 });
     });
 
-    const data = await response.json();
-    if (!response.ok) return res.status(400).json(data);
+    if (totalEarnings < 5) {
+      return res.status(400).json({ error: "Minimum payout is 5 Pi" });
+    }
 
-    res.json({ success: true, payment: data });
+    // 🔹 إنشاء طلب payout
+    await db.collection("payout_requests").add({
+      username,
+      walletAddress,
+      amount: Number(totalEarnings.toFixed(2)),
+      status: "pending",
+      requestedAt: Date.now(),
+      approvedAt: null
+    });
+
+    // 🔹 تحديث المستخدم فقط لإظهار آخر طلب
+    await userRef.set({
+      lastPayoutAt: Date.now(),
+      lastPayoutAmount: Number(totalEarnings.toFixed(2))
+    }, { merge: true });
+
+    await batch.commit();
+
+    res.json({
+      success: true,
+      amount: Number(totalEarnings.toFixed(2))
+    });
+
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Payout error" });
+    console.error("Payout error:", err);
+    res.status(500).json({ error: "Server error" });
   }
 });
-
 
 
 /* ================= START ================= */
@@ -471,12 +450,10 @@ app.post("/complete-payment", async (req, res) => {
   }
 });
 
-
-// جلب الدفعات المعلقة للمستخدم (Frontend يمكن استدعاؤه عند login)
+// جلب الدفعات المعلقة للمستخدم (للحل التلقائي)
 app.get("/pending-payments", async (req, res) => {
   const { userUid } = req.query;
-  if (!userUid) return res.status(400).json({ success: false, error: "missing userUid" });
-  
+  if (!userUid || !db) return res.status(400).json({ success: false, error: "missing userUid" });
   try {
     const snap = await db.collection("pendingPayments").where("userUid", "==", userUid).get();
     const pendingPayments = snap.docs.map(doc => ({ id: doc.id, bookId: doc.data().bookId }));
@@ -485,13 +462,8 @@ app.get("/pending-payments", async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
-
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Backend running on port", PORT));
-
-
-
 
 
 
