@@ -342,64 +342,34 @@ app.post("/reset-sales", async (req, res) => {
 /* ================= PAYOUT REQUEST ================= */
 app.post("/request-payout", async (req, res) => {
   try {
-    const { username, walletAddress } = req.body;
-    if (!username || !walletAddress) {
-      return res.status(400).json({ error: "Missing data" });
+    const amount = 1; // عدل المبلغ لاحقًا إذا أردت
+
+    const response = await fetch(`${PI_API_URL}/payments`, {
+      method: "POST",
+      headers: {
+        Authorization: `Key ${PI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        amount,
+        memo: "Payout from Spicy App"
+      })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return res.status(400).json(data);
     }
 
-    const userRef = db.collection("users").doc(username);
-    const userSnap = await userRef.get();
-
-    // 🔹 جلب كتب المستخدم
-    const booksSnap = await db.collection("books")
-      .where("owner", "==", username)
-      .get();
-
-    let totalEarnings = 0;
-    const batch = db.batch();
-
-    booksSnap.forEach(doc => {
-      const book = doc.data();
-      const sales = book.salesCount || 0;
-      const profit = sales * book.price * 0.7;
-      totalEarnings += profit;
-
-      // تصفير المبيعات
-      batch.update(doc.ref, { salesCount: 0 });
-    });
-
-    if (totalEarnings < 5) {
-      return res.status(400).json({ error: "Minimum payout is 5 Pi" });
-    }
-
-    // 🔹 إنشاء طلب payout
-    await db.collection("payout_requests").add({
-      username,
-      walletAddress,
-      amount: Number(totalEarnings.toFixed(2)),
-      status: "pending",
-      requestedAt: Date.now(),
-      approvedAt: null
-    });
-
-    // 🔹 تحديث المستخدم فقط لإظهار آخر طلب
-    await userRef.set({
-      lastPayoutAt: Date.now(),
-      lastPayoutAmount: Number(totalEarnings.toFixed(2))
-    }, { merge: true });
-
-    await batch.commit();
-
-    res.json({
-      success: true,
-      amount: Number(totalEarnings.toFixed(2))
-    });
+    res.json({ success: true, payment: data });
 
   } catch (err) {
-    console.error("Payout error:", err);
-    res.status(500).json({ error: "Server error" });
+    console.error(err);
+    res.status(500).json({ error: "Payout error" });
   }
 });
+
 
 
 /* ================= START ================= */
@@ -464,6 +434,7 @@ app.get("/pending-payments", async (req, res) => {
 });
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Backend running on port", PORT));
+
 
 
 
