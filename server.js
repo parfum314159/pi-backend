@@ -161,25 +161,9 @@ app.post("/complete-payment", async (req, res) => {
 
     if (!bookId || !userUid) {
       throw new Error("Missing metadata from Pi payment");
-    }app.post("/complete-payment", async (req, res) => {
-  try {
-    const { paymentId } = req.body;
-    if (!paymentId) return res.status(400).json({ error: "Missing paymentId" });
-
-    const paymentRes = await fetch(`${PI_API_URL}/payments/${paymentId}`, {
-      headers: { Authorization: `Key ${PI_API_KEY}` }
-    });
-
-    const paymentData = await paymentRes.json();
-    const txid = paymentData.txid;
-
-    if (!txid) {
-      return res.status(400).json({ error: "Payment not completed on Pi yet" });
     }
 
-    const bookId = paymentData.metadata.bookId;
-    const userUid = paymentData.metadata.userUid;
-
+    // 3️⃣ إكمال الدفع
     const completeRes = await fetch(`${PI_API_URL}/payments/${paymentId}/complete`, {
       method: "POST",
       headers: {
@@ -189,17 +173,33 @@ app.post("/complete-payment", async (req, res) => {
       body: JSON.stringify({ txid })
     });
 
-    if (!completeRes.ok) throw new Error("Complete failed");
+    if (!completeRes.ok) {
+      throw new Error(await completeRes.text());
+    }
 
-    await db.collection("purchases")
-      .doc(userUid)
-      .collection("books")
-      .doc(bookId)
-      .set({ purchasedAt: Date.now() });
+    // 4️⃣ تحديث Firestore (transaction)
+    const bookRef = db.collection("books").doc(bookId);
 
-    res.json({ success: true, pdfUrl: (await db.collection("books").doc(bookId).get()).data().pdf });
+    await db.runTransaction(async (t) => {
+      t.update(bookRef, {
+        salesCount: admin.firestore.FieldValue.increment(1)
+      });
+
+      t.set(
+        db.collection("purchases")
+          .doc(userUid)
+          .collection("books")
+          .doc(bookId),
+        { purchasedAt: Date.now() }
+      );
+    });
+
+    // 5️⃣ إرسال رابط الكتاب
+    const bookSnap = await bookRef.get();
+    res.json({ success: true, pdfUrl: bookSnap.data().pdf });
 
   } catch (e) {
+    console.error("Complete payment error:", e.message);
     res.status(500).json({ error: e.message });
   }
 });
@@ -464,7 +464,6 @@ app.get("/pending-payments", async (req, res) => {
 });
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Backend running on port", PORT));
-
 
 
 
