@@ -20,6 +20,56 @@ const db = admin.firestore();
 const PI_API_KEY = process.env.PI_API_KEY;
 const PI_API_URL = "https://api.minepi.com/v2";
 
+// ================= HANDLE PENDING PAYMENTS =================
+async function handlePendingPayment(paymentId) {
+  try {
+    const r = await fetch(`${PI_API_URL}/payments/${paymentId}`, {
+      method: "GET",
+      headers: { Authorization: `Key ${PI_API_KEY}` }
+    });
+
+    if (!r.ok) throw new Error(await r.text());
+    const paymentData = await r.json();
+
+    // إذا لم يكن هناك txid فلا نكمل
+    if (!paymentData.txid) return;
+
+    const bookId = paymentData.metadata?.bookId;
+    const userUid = paymentData.metadata?.userUid;
+
+    if (!bookId || !userUid) return;
+
+    // إكمال الدفع
+    await fetch(`${PI_API_URL}/payments/${paymentId}/complete`, {
+      method: "POST",
+      headers: {
+        Authorization: `Key ${PI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ txid: paymentData.txid })
+    });
+
+    // تحديث Firestore
+    const bookRef = db.collection("books").doc(bookId);
+    await db.runTransaction(async (t) => {
+      t.update(bookRef, { salesCount: admin.firestore.FieldValue.increment(1) });
+      t.set(
+        db.collection("purchases").doc(userUid).collection("books").doc(bookId),
+        { purchasedAt: Date.now() }
+      );
+    });
+
+    // حذف الدفع من pending
+    await db.collection("pendingPayments").doc(paymentId).delete();
+
+    console.log("✅ Pending payment resolved:", paymentId);
+
+  } catch (e) {
+    console.log("⚠️ Pending resolve failed:", e.message);
+  }
+}
+
+
 /* ================= ROOT ================= */
 app.get("/", (_, res) => res.send("Backend running"));
 
@@ -420,10 +470,12 @@ app.post("/complete-payment", async (req, res) => {
   }
 });
 
-// جلب الدفعات المعلقة للمستخدم (للحل التلقائي)
+
+// جلب الدفعات المعلقة للمستخدم (Frontend يمكن استدعاؤه عند login)
 app.get("/pending-payments", async (req, res) => {
   const { userUid } = req.query;
-  if (!userUid || !db) return res.status(400).json({ success: false, error: "missing userUid" });
+  if (!userUid) return res.status(400).json({ success: false, error: "missing userUid" });
+  
   try {
     const snap = await db.collection("pendingPayments").where("userUid", "==", userUid).get();
     const pendingPayments = snap.docs.map(doc => ({ id: doc.id, bookId: doc.data().bookId }));
@@ -432,8 +484,11 @@ app.get("/pending-payments", async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
+
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Backend running on port", PORT));
+
 
 
 
