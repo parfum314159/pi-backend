@@ -462,50 +462,8 @@ app.get("/pending-payments", async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
-
-app.post("/create-payout-payment", async (req, res) => {
-  try {
-    const { username, walletAddress, amount } = req.body;
-
-    if (!username || !walletAddress || !amount) {
-      return res.status(400).json({ error: "Missing data" });
-    }
-
-    // إنشاء دفع من محفظة التطبيق
-    const paymentRes = await fetch(`${PI_API_URL}/payments`, {
-      method: "POST",
-      headers: {
-        Authorization: `Key ${PI_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        amount: Number(amount),
-        memo: `Spicy Library payout for ${username}`,
-        metadata: {
-          type: "payout",
-          username,
-          walletAddress
-        }
-      })
-    });
-
-    const data = await paymentRes.json();
-    if (!paymentRes.ok) {
-      return res.status(400).json(data);
-    }
-
-    res.json({ success: true, payment: data });
-
-  } catch (e) {
-    console.error("Payout create error:", e.message);
-    res.status(500).json({ error: "Payout creation failed" });
-  }
-});
-
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Backend running on port", PORT));
-
 
 
 
