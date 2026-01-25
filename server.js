@@ -392,28 +392,29 @@ app.post("/reset-sales", async (req, res) => {
 /* ================= PAYOUT REQUEST ================= */
 app.post("/request-payout", async (req, res) => {
   try {
-    const amount = 1; // عدل المبلغ لاحقًا إذا أردت
+    const { userUid, username } = req.body;
+    if (!userUid || !username) return res.status(400).json({ error: "Missing user data" });
+
+    // تحقق من وجود أي كتاب للمستخدم (اختياري)
+    const userBooksSnap = await db.collection("books").where("ownerUid", "==", userUid).get();
+    if (userBooksSnap.empty) return res.status(404).json({ error: "User not found or no books" });
+
+    const amount = 1; // يمكن تحديد المبلغ أو حسابه حسب الأرباح
 
     const response = await fetch(`${PI_API_URL}/payments`, {
       method: "POST",
-      headers: {
-        Authorization: `Key ${PI_API_KEY}`,
-        "Content-Type": "application/json"
-      },
+      headers: { Authorization: `Key ${PI_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         amount,
-        memo: "Payout from Spicy App"
+        memo: `Payout for ${username}`,
+        metadata: { userUid, username }
       })
     });
 
     const data = await response.json();
-
-    if (!response.ok) {
-      return res.status(400).json(data);
-    }
+    if (!response.ok) return res.status(400).json(data);
 
     res.json({ success: true, payment: data });
-
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Payout error" });
@@ -488,6 +489,7 @@ app.get("/pending-payments", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Backend running on port", PORT));
+
 
 
 
