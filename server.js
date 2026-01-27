@@ -34,6 +34,23 @@ app.get("/books", async (_, res) => {
   }
 });
 
+/* ================= SINGLE BOOK ================= */
+app.get("/book/:id", async (req, res) => {
+  try {
+    const bookId = req.params.id;
+    const doc = await db.collection("books").doc(bookId).get();
+
+    if (!doc.exists) {
+      return res.status(404).json({ success: false, error: "Book not found" });
+    }
+
+    res.json({ success: true, book: { id: doc.id, ...doc.data() } });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+
 /* ================= SAVE BOOK ================= */
 app.post("/save-book", async (req, res) => {
   try {
@@ -464,6 +481,7 @@ app.get("/pending-payments", async (req, res) => {
 });
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Backend running on port", PORT));
+
 
 
 
