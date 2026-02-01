@@ -418,35 +418,6 @@ app.post("/request-payout", async (req, res) => {
   }
 });
 
-app.post("/approve-payout", async (req, res) => {
-  const { paymentId } = req.body;
-
-  await fetch(`https://api.minepi.com/v2/payments/${paymentId}/approve`, {
-    method: "POST",
-    headers: { Authorization: `Key ${PI_API_KEY}` }
-  });
-
-  res.json({ success: true });
-});
-
-app.post("/complete-payout", async (req, res) => {
-  const { paymentId, txid } = req.body;
-
-  await fetch(`https://api.minepi.com/v2/payments/${paymentId}/complete`, {
-    method: "POST",
-    headers: {
-      Authorization: `Key ${PI_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ txid })
-  });
-
-  // تصفير الأرباح هنا
-  // update books / salesCount
-
-  res.json({ success: true });
-});
-
 
 
 /* ================= START ================= */
@@ -511,73 +482,48 @@ app.get("/pending-payments", async (req, res) => {
 });
 
 
-app.post("/payout-user", async (req, res) => {
+// ================= WITHDRAW SIMULATION =================
+app.post("/withdraw-simulated", async (req, res) => {
   try {
-    const { username, walletAddress } = req.body;
-    if (!username || !walletAddress) {
-      return res.status(400).json({ error: "Missing username or walletAddress" });
+    const { username, amount } = req.body;
+    if (!username || !amount || amount < 5) {
+      return res.status(400).json({ success: false });
     }
 
-    // 1️⃣ جلب أرباح المستخدم
-    const booksSnap = await db.collection("books").where("owner", "==", username).get();
-    let totalEarnings = 0;
+    const booksSnap = await db
+      .collection("books")
+      .where("owner", "==", username)
+      .get();
 
-    booksSnap.forEach(doc => {
-      const book = doc.data();
-      totalEarnings += (book.salesCount || 0) * book.price * 0.7; // 70% من سعر الكتاب
-    });
-
-    if (totalEarnings < 5) {
-      return res.status(400).json({ error: "Minimum payout is 5 Pi" });
-    }
-
-    // 2️⃣ إرسال Pi مباشرة من محفظة التطبيق
-    const response = await fetch("https://api.minepi.com/v2/payments", {
-      method: "POST",
-      headers: {
-        "Authorization": `Key ${PI_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        amount: totalEarnings.toFixed(2),
-        recipient: walletAddress,
-        memo: `Payout for ${username}`,
-        metadata: { username }
-      })
-    });
-
-    if (!response.ok) throw new Error(await response.text());
-    const paymentData = await response.json();
-
-    // 3️⃣ بعد نجاح الدفع تصفير المبيعات
     const batch = db.batch();
-    booksSnap.forEach(doc => batch.update(doc.ref, { salesCount: 0 }));
+    booksSnap.forEach(doc => {
+      batch.update(doc.ref, { salesCount: 0 });
+    });
+
     await batch.commit();
 
-    // 4️⃣ سجل السحب في Firestore
     await db.collection("payout_requests").add({
       username,
-      walletAddress,
-      amount: Number(totalEarnings.toFixed(2)),
-      status: "completed",
-      txid: paymentData.txid,
-      requestedAt: Date.now(),
-      approvedAt: Date.now()
+      amount,
+      simulated: true,
+      createdAt: Date.now()
     });
 
-    res.json({ success: true, amount: totalEarnings.toFixed(2), txid: paymentData.txid });
-
-  } catch (err) {
-    console.error("Payout error:", err);
-    res.status(500).json({ error: err.message });
+    res.json({ success: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false });
   }
 });
 
+
+    
 
 
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Backend running on port", PORT));
+
 
 
 
