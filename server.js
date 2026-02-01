@@ -222,25 +222,27 @@ app.post("/complete-payment", async (req, res) => {
 });
 
 
-// 🔹 معالجة الدفعات المعلقة (اختياري – لكنه آمن)
 async function handlePendingPayment(paymentId) {
   try {
     const r = await fetch(`${PI_API_URL}/payments/${paymentId}`, {
       method: "GET",
       headers: { Authorization: `Key ${PI_API_KEY}` }
     });
-
     if (!r.ok) throw new Error(await r.text());
     const paymentData = await r.json();
 
-    if (!paymentData.txid) return;
+    if (!paymentData.txid) {
+      console.log("⚠️ Pending payment not ready:", paymentId);
+      return; // انتظر txid قبل محاولة الإكمال
+    }
 
     const bookId = paymentData.metadata?.bookId;
     const userUid = paymentData.metadata?.userUid;
 
     if (!bookId || !userUid) return;
 
-    await fetch(`${PI_API_URL}/payments/${paymentId}/complete`, {
+    // إكمال الدفع
+    const completeRes = await fetch(`${PI_API_URL}/payments/${paymentId}/complete`, {
       method: "POST",
       headers: {
         Authorization: `Key ${PI_API_KEY}`,
@@ -249,43 +251,49 @@ async function handlePendingPayment(paymentId) {
       body: JSON.stringify({ txid: paymentData.txid })
     });
 
-    const bookRef = db.collection("books").doc(bookId);
+    if (!completeRes.ok) throw new Error(await completeRes.text());
 
+    // تحديث Firestore
+    const bookRef = db.collection("books").doc(bookId);
     await db.runTransaction(async (t) => {
       t.update(bookRef, {
         salesCount: admin.firestore.FieldValue.increment(1)
       });
-
       t.set(
-        db.collection("purchases")
-          .doc(userUid)
-          .collection("books")
-          .doc(bookId),
+        db.collection("purchases").doc(userUid).collection("books").doc(bookId),
         { purchasedAt: Date.now() }
       );
     });
 
     console.log("✅ Pending payment resolved:", paymentId);
-
   } catch (e) {
     console.log("⚠️ Pending resolve failed:", e.message);
   }
 }
 
-app.post("/resolve-pending", async (req, res) => {
+
+async function resolvePendingPayments() {
+  if (!userUid) return;
   try {
-    const { paymentId } = req.body;
-    if (!paymentId) {
-      return res.status(400).json({ error: "Missing paymentId" });
+    const res = await fetch(`${BACKEND_URL}/pending-payments?userUid=${userUid}`);
+    const data = await res.json();
+    if (!data.success || data.pendingPayments.length === 0) return;
+
+    for (const p of data.pendingPayments) {
+      const result = await fetch(`${BACKEND_URL}/resolve-pending`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paymentId: p.id })
+      });
+      const json = await result.json();
+      if (!json.success) console.log("Failed to resolve:", p.id);
     }
-
-    await handlePendingPayment(paymentId);
-    res.json({ success: true });
-
-  } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.log("✅ All pending payments processed");
+  } catch (err) {
+    console.error("Pending payments error:", err);
   }
-});
+}
+
 
 
 /* ================= PURCHASES ================= */
@@ -557,6 +565,7 @@ app.post("/reset-all", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Backend running on port", PORT));
+
 
 
 
