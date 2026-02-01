@@ -421,6 +421,43 @@ app.post("/request-payout", async (req, res) => {
   }
 });
 
+app.post("/payout", async (req, res) => {
+  try {
+    const { username, walletAddress, amount } = req.body;
+    if (!username || !walletAddress || !amount) return res.status(400).json({ error: "Missing data" });
+
+    const paymentRes = await fetch("https://api.minepi.com/v2/payments", {
+      method: "POST",
+      headers: {
+        "Authorization": `Key ${PI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        amount: Number(amount),
+        memo: "Automatic payout - Spicy Library",
+        recipient: walletAddress
+      })
+    });
+
+    if (!paymentRes.ok) throw new Error(await paymentRes.text());
+    const paymentData = await paymentRes.json();
+
+    // سجل الدفع في Firestore
+    await db.collection("payout_requests").add({
+      username,
+      walletAddress,
+      amount,
+      status: "completed",
+      requestedAt: Date.now(),
+      txid: paymentData.txid
+    });
+
+    res.json({ success: true, txid: paymentData.txid });
+  } catch (err) {
+    console.error("Payout error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 /* ================= START ================= */
 // حفظ الدفع كـ pending عند approve
@@ -484,6 +521,7 @@ app.get("/pending-payments", async (req, res) => {
 });
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Backend running on port", PORT));
+
 
 
 
