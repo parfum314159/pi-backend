@@ -481,31 +481,38 @@ app.get("/pending-payments", async (req, res) => {
 });
 
 
-app.post("/auto-payout", async (req, res) => {
+app.post("/payout-user", async (req, res) => {
   try {
     const { username, walletAddress } = req.body;
-    if (!username || !walletAddress) return res.status(400).json({ error: "Missing data" });
+    if (!username || !walletAddress) {
+      return res.status(400).json({ error: "Missing username or walletAddress" });
+    }
 
-    // 1️⃣ جلب كتب المستخدم وحساب الأرباح
+    // 1️⃣ جلب أرباح الكتب
     const booksSnap = await db.collection("books").where("owner", "==", username).get();
     let totalEarnings = 0;
     const batch = db.batch();
 
     booksSnap.forEach(doc => {
       const book = doc.data();
-      const sales = book.salesCount || 0;
-      totalEarnings += sales * book.price * 0.7;
+      const profit = (book.salesCount || 0) * book.price * 0.7; // 70%
+      totalEarnings += profit;
       batch.update(doc.ref, { salesCount: 0 }); // تصفير المبيعات
     });
 
-    if (totalEarnings < 5) return res.status(400).json({ error: "Minimum payout is 5 Pi" });
+    if (totalEarnings < 5) {
+      return res.status(400).json({ error: "Minimum payout is 5 Pi" });
+    }
 
     await batch.commit();
 
-    // 2️⃣ إرسال Pi مباشرة عبر Pi API
-    const paymentRes = await fetch("https://api.minepi.com/v2/payments", {
+    // 2️⃣ إرسال Pi مباشرة من محفظة التطبيق
+    const response = await fetch("https://api.minepi.com/v2/payments", {
       method: "POST",
-      headers: { "Authorization": `Key ${PI_API_KEY}`, "Content-Type": "application/json" },
+      headers: {
+        "Authorization": `Key ${PI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
       body: JSON.stringify({
         amount: totalEarnings.toFixed(2),
         recipient: walletAddress,
@@ -514,10 +521,10 @@ app.post("/auto-payout", async (req, res) => {
       })
     });
 
-    if (!paymentRes.ok) throw new Error(await paymentRes.text());
-    const paymentData = await paymentRes.json();
+    if (!response.ok) throw new Error(await response.text());
+    const paymentData = await response.json();
 
-    // 3️⃣ سجل الدفع في Firestore
+    // 3️⃣ سجل السحب في Firestore
     await db.collection("payout_requests").add({
       username,
       walletAddress,
@@ -531,15 +538,17 @@ app.post("/auto-payout", async (req, res) => {
     res.json({ success: true, amount: totalEarnings.toFixed(2), txid: paymentData.txid });
 
   } catch (err) {
-    console.error("Auto payout error:", err);
+    console.error("Payout error:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
 
 
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Backend running on port", PORT));
+
 
 
 
