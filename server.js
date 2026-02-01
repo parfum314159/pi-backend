@@ -519,8 +519,45 @@ app.get("/pending-payments", async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
+
+// هذا endpoint جديد لمسح كل البيانات التجريبية
+app.post("/reset-all", async (req, res) => {
+  try {
+    // مسح جميع الكتب
+    const booksSnap = await db.collection("books").get();
+    const batchBooks = db.batch();
+    booksSnap.forEach(doc => batchBooks.delete(doc.ref));
+    await batchBooks.commit();
+
+    // مسح جميع المشتريات
+    const purchasesSnap = await db.collectionGroup("books").get();
+    const batchPurchases = db.batch();
+    purchasesSnap.forEach(doc => batchPurchases.delete(doc.ref));
+    await batchPurchases.commit();
+
+    // مسح جميع التصويتات
+    const ratingsSnap = await db.collectionGroup("votes").get();
+    const batchRatings = db.batch();
+    ratingsSnap.forEach(doc => batchRatings.delete(doc.ref));
+    await batchRatings.commit();
+
+    // مسح كل طلبات السحب
+    const payoutsSnap = await db.collection("payout_requests").get();
+    const batchPayouts = db.batch();
+    payoutsSnap.forEach(doc => batchPayouts.delete(doc.ref));
+    await batchPayouts.commit();
+
+    res.json({ success: true, message: "All data cleared. App is now fresh!" });
+  } catch (e) {
+    console.error("Reset error:", e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Backend running on port", PORT));
+
 
 
 
