@@ -364,13 +364,8 @@ app.post("/request-payout", async (req, res) => {
       return res.status(400).json({ error: "Missing data" });
     }
 
-    const userRef = db.collection("users").doc(username);
-    const userSnap = await userRef.get();
-
-    // 🔹 جلب كتب المستخدم
-    const booksSnap = await db.collection("books")
-      .where("owner", "==", username)
-      .get();
+    // جلب كتب المستخدم
+    const booksSnap = await db.collection("books").where("owner", "==", username).get();
 
     let totalEarnings = 0;
     const batch = db.batch();
@@ -389,31 +384,39 @@ app.post("/request-payout", async (req, res) => {
       return res.status(400).json({ error: "Minimum payout is 5 Pi" });
     }
 
-    // 🔹 إنشاء طلب payout
+    // إنشاء دفع تلقائي باستخدام Pi API
+    const paymentRes = await fetch("https://api.minepi.com/v2/payments", {
+      method: "POST",
+      headers: {
+        "Authorization": `Key ${PI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        amount: totalEarnings.toFixed(2),
+        memo: "Automatic payout - Spicy Library",
+        recipient: walletAddress
+      })
+    });
+
+    if (!paymentRes.ok) throw new Error(await paymentRes.text());
+
+    const paymentData = await paymentRes.json();
+
+    // تحديث Firestore بعد إنشاء الدفع
+    await batch.commit();
     await db.collection("payout_requests").add({
       username,
       walletAddress,
-      amount: Number(totalEarnings.toFixed(2)),
-      status: "pending",
+      amount: totalEarnings.toFixed(2),
+      status: "completed",
       requestedAt: Date.now(),
-      approvedAt: null
+      txid: paymentData.txid
     });
 
-    // 🔹 تحديث المستخدم فقط لإظهار آخر طلب
-    await userRef.set({
-      lastPayoutAt: Date.now(),
-      lastPayoutAmount: Number(totalEarnings.toFixed(2))
-    }, { merge: true });
-
-    await batch.commit();
-
-    res.json({
-      success: true,
-      amount: Number(totalEarnings.toFixed(2))
-    });
+    res.json({ success: true, amount: totalEarnings.toFixed(2), txid: paymentData.txid });
 
   } catch (err) {
-    console.error("Payout error:", err);
+    console.error("Auto payout error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -481,6 +484,7 @@ app.get("/pending-payments", async (req, res) => {
 });
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Backend running on port", PORT));
+
 
 
 
