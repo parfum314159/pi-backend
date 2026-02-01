@@ -418,6 +418,36 @@ app.post("/request-payout", async (req, res) => {
   }
 });
 
+app.post("/approve-payout", async (req, res) => {
+  const { paymentId } = req.body;
+
+  await fetch(`https://api.minepi.com/v2/payments/${paymentId}/approve`, {
+    method: "POST",
+    headers: { Authorization: `Key ${PI_API_KEY}` }
+  });
+
+  res.json({ success: true });
+});
+
+app.post("/complete-payout", async (req, res) => {
+  const { paymentId, txid } = req.body;
+
+  await fetch(`https://api.minepi.com/v2/payments/${paymentId}/complete`, {
+    method: "POST",
+    headers: {
+      Authorization: `Key ${PI_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ txid })
+  });
+
+  // تصفير الأرباح هنا
+  // update books / salesCount
+
+  res.json({ success: true });
+});
+
+
 
 /* ================= START ================= */
 // حفظ الدفع كـ pending عند approve
@@ -548,6 +578,7 @@ app.post("/payout-user", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Backend running on port", PORT));
+
 
 
 
