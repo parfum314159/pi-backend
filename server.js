@@ -479,8 +479,68 @@ app.get("/pending-payments", async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
+
+
+app.post("/auto-payout", async (req, res) => {
+  try {
+    const { username, walletAddress } = req.body;
+    if (!username || !walletAddress) return res.status(400).json({ error: "Missing data" });
+
+    // 1️⃣ جلب كتب المستخدم وحساب الأرباح
+    const booksSnap = await db.collection("books").where("owner", "==", username).get();
+    let totalEarnings = 0;
+    const batch = db.batch();
+
+    booksSnap.forEach(doc => {
+      const book = doc.data();
+      const sales = book.salesCount || 0;
+      totalEarnings += sales * book.price * 0.7;
+      batch.update(doc.ref, { salesCount: 0 }); // تصفير المبيعات
+    });
+
+    if (totalEarnings < 5) return res.status(400).json({ error: "Minimum payout is 5 Pi" });
+
+    await batch.commit();
+
+    // 2️⃣ إرسال Pi مباشرة عبر Pi API
+    const paymentRes = await fetch("https://api.minepi.com/v2/payments", {
+      method: "POST",
+      headers: { "Authorization": `Key ${PI_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        amount: totalEarnings.toFixed(2),
+        recipient: walletAddress,
+        memo: `Payout for ${username}`,
+        metadata: { username }
+      })
+    });
+
+    if (!paymentRes.ok) throw new Error(await paymentRes.text());
+    const paymentData = await paymentRes.json();
+
+    // 3️⃣ سجل الدفع في Firestore
+    await db.collection("payout_requests").add({
+      username,
+      walletAddress,
+      amount: Number(totalEarnings.toFixed(2)),
+      status: "completed",
+      txid: paymentData.txid,
+      requestedAt: Date.now(),
+      approvedAt: Date.now()
+    });
+
+    res.json({ success: true, amount: totalEarnings.toFixed(2), txid: paymentData.txid });
+
+  } catch (err) {
+    console.error("Auto payout error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Backend running on port", PORT));
+
 
 
 
