@@ -488,23 +488,18 @@ app.post("/payout-user", async (req, res) => {
       return res.status(400).json({ error: "Missing username or walletAddress" });
     }
 
-    // 1️⃣ جلب أرباح الكتب
+    // 1️⃣ جلب أرباح المستخدم
     const booksSnap = await db.collection("books").where("owner", "==", username).get();
     let totalEarnings = 0;
-    const batch = db.batch();
 
     booksSnap.forEach(doc => {
       const book = doc.data();
-      const profit = (book.salesCount || 0) * book.price * 0.7; // 70%
-      totalEarnings += profit;
-      batch.update(doc.ref, { salesCount: 0 }); // تصفير المبيعات
+      totalEarnings += (book.salesCount || 0) * book.price * 0.7; // 70% من سعر الكتاب
     });
 
     if (totalEarnings < 5) {
       return res.status(400).json({ error: "Minimum payout is 5 Pi" });
     }
-
-    await batch.commit();
 
     // 2️⃣ إرسال Pi مباشرة من محفظة التطبيق
     const response = await fetch("https://api.minepi.com/v2/payments", {
@@ -524,7 +519,12 @@ app.post("/payout-user", async (req, res) => {
     if (!response.ok) throw new Error(await response.text());
     const paymentData = await response.json();
 
-    // 3️⃣ سجل السحب في Firestore
+    // 3️⃣ بعد نجاح الدفع تصفير المبيعات
+    const batch = db.batch();
+    booksSnap.forEach(doc => batch.update(doc.ref, { salesCount: 0 }));
+    await batch.commit();
+
+    // 4️⃣ سجل السحب في Firestore
     await db.collection("payout_requests").add({
       username,
       walletAddress,
@@ -548,6 +548,7 @@ app.post("/payout-user", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Backend running on port", PORT));
+
 
 
 
