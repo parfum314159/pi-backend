@@ -372,13 +372,13 @@ app.post("/reset-sales", async (req, res) => {
 app.post("/request-payout", async (req, res) => {
   try {
 
-    const { username, walletAddress } = req.body;
+   const { username, userUid, walletAddress } = req.body;
 
 // ================= PAYOUT LOCK =================
 
 const payoutLockRef = db
   .collection("payoutLocks")
-  .doc(username);
+  .doc(userUid);
 
 const existingLock = await payoutLockRef.get();
 
@@ -421,8 +421,8 @@ finally {
 }
     // جلب الكتب
     const booksSnap = await db.collection("books")
-      .where("owner", "==", username)
-      .get();
+  .where("ownerUid", "==", userUid)
+  .get();
 
     let totalEarnings = 0;
 
@@ -490,8 +490,9 @@ finally {
 
     // ================= حفظ السحب =================
 
-    await db.collection("payouts").add({
-      username,
+   await db.collection("payouts").add({
+  username,
+  userUid,
       walletAddress,
       amount: totalEarnings,
       txid: result.hash,
@@ -513,7 +514,7 @@ await payoutLockRef.delete();
 
 try {
   await db.collection("payoutLocks")
-    .doc(req.body.username)
+  .doc(req.body.userUid)
     .delete();
 } catch {}
     
