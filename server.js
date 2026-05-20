@@ -374,6 +374,26 @@ app.post("/request-payout", async (req, res) => {
 
     const { username, walletAddress } = req.body;
 
+// ================= PAYOUT LOCK =================
+
+const payoutLockRef = db
+  .collection("payoutLocks")
+  .doc(username);
+
+const existingLock = await payoutLockRef.get();
+
+if (existingLock.exists) {
+  return res.status(400).json({
+    success: false,
+    error: "Payout already processing"
+  });
+}
+
+// إنشاء القفل
+await payoutLockRef.set({
+  createdAt: Date.now()
+});
+    
     if (!username || !walletAddress) {
       return res.status(400).json({
         success: false,
@@ -460,6 +480,11 @@ app.post("/request-payout", async (req, res) => {
       createdAt: Date.now()
     });
 
+    
+    // حذف القفل بعد النجاح
+await payoutLockRef.delete();
+
+    
     res.json({
       success: true,
       amount: totalEarnings,
@@ -468,6 +493,12 @@ app.post("/request-payout", async (req, res) => {
 
   } catch (e) {
 
+try {
+  await db.collection("payoutLocks")
+    .doc(req.body.username)
+    .delete();
+} catch {}
+    
     console.error("AUTO PAYOUT ERROR:", e);
 
     res.status(500).json({
