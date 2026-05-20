@@ -2,7 +2,7 @@ import express from "express";
 import admin from "firebase-admin";
 import fetch from "node-fetch";
 import cors from "cors";
-
+import StellarSdk from "stellar-sdk";
 /* ================= APP ================= */
 const app = express();
 app.use(cors());
@@ -19,6 +19,17 @@ const db = admin.firestore();
 /* ================= PI ================= */
 const PI_API_KEY = process.env.PI_API_KEY;
 const PI_API_URL = "https://api.minepi.com/v2";
+
+
+/* ================= STELLAR TESTNET ================= */
+
+const serverStellar = new StellarSdk.Horizon.Server(
+  "https://api.testnet.minepi.com"
+);
+
+const appWallet = StellarSdk.Keypair.fromSecret(
+  process.env.PI_WALLET_SECRET
+);
 
 /* ================= ROOT ================= */
 app.get("/", (_, res) => res.send("Backend running"));
@@ -356,65 +367,113 @@ app.post("/reset-sales", async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
-/* ================= PAYOUT REQUEST ================= */
+/* ================= AUTO PAYOUT ================= */
+
 app.post("/request-payout", async (req, res) => {
   try {
+
     const { username, walletAddress } = req.body;
+
     if (!username || !walletAddress) {
-      return res.status(400).json({ error: "Missing data" });
+      return res.status(400).json({
+        success: false,
+        error: "Missing data"
+      });
     }
 
-    const userRef = db.collection("users").doc(username);
-    const userSnap = await userRef.get();
-
-    // 🔹 جلب كتب المستخدم
+    // جلب الكتب
     const booksSnap = await db.collection("books")
       .where("owner", "==", username)
       .get();
 
     let totalEarnings = 0;
-    const batch = db.batch();
 
     booksSnap.forEach(doc => {
       const book = doc.data();
-      const sales = book.salesCount || 0;
-      const profit = sales * book.price * 0.7;
-      totalEarnings += profit;
 
-      // تصفير المبيعات
-      batch.update(doc.ref, { salesCount: 0 });
+      const sales = book.salesCount || 0;
+
+      const profit = sales * book.price * 0.7;
+
+      totalEarnings += profit;
     });
+
+    totalEarnings = Number(totalEarnings.toFixed(2));
 
     if (totalEarnings < 5) {
-      return res.status(400).json({ error: "Minimum payout is 5 Pi" });
+      return res.status(400).json({
+        success: false,
+        error: "Minimum payout is 5 Pi"
+      });
     }
 
-    // 🔹 إنشاء طلب payout
-    await db.collection("payout_requests").add({
-      username,
-      walletAddress,
-      amount: Number(totalEarnings.toFixed(2)),
-      status: "pending",
-      requestedAt: Date.now(),
-      approvedAt: null
-    });
+    // ================= إرسال Pi =================
 
-    // 🔹 تحديث المستخدم فقط لإظهار آخر طلب
-    await userRef.set({
-      lastPayoutAt: Date.now(),
-      lastPayoutAmount: Number(totalEarnings.toFixed(2))
-    }, { merge: true });
+    const sourceAccount = await serverStellar.loadAccount(
+      appWallet.publicKey()
+    );
+
+    const fee = await serverStellar.fetchBaseFee();
+
+    const transaction = new StellarSdk.TransactionBuilder(
+      sourceAccount,
+      {
+        fee,
+        networkPassphrase: "Pi Testnet"
+      }
+    )
+      .addOperation(
+        StellarSdk.Operation.payment({
+          destination: walletAddress,
+          asset: StellarSdk.Asset.native(),
+          amount: totalEarnings.toString()
+        })
+      )
+      .setTimeout(30)
+      .build();
+
+    transaction.sign(appWallet);
+
+    const result = await serverStellar.submitTransaction(
+      transaction
+    );
+
+    // ================= تصفير المبيعات =================
+
+    const batch = db.batch();
+
+    booksSnap.forEach(doc => {
+      batch.update(doc.ref, {
+        salesCount: 0
+      });
+    });
 
     await batch.commit();
 
-    res.json({
-      success: true,
-      amount: Number(totalEarnings.toFixed(2))
+    // ================= حفظ السحب =================
+
+    await db.collection("payouts").add({
+      username,
+      walletAddress,
+      amount: totalEarnings,
+      txid: result.hash,
+      createdAt: Date.now()
     });
 
-  } catch (err) {
-    console.error("Payout error:", err);
-    res.status(500).json({ error: "Server error" });
+    res.json({
+      success: true,
+      amount: totalEarnings,
+      txid: result.hash
+    });
+
+  } catch (e) {
+
+    console.error("AUTO PAYOUT ERROR:", e);
+
+    res.status(500).json({
+      success: false,
+      error: e.message
+    });
   }
 });
 
