@@ -383,12 +383,24 @@ const payoutLockRef = db
 const existingLock = await payoutLockRef.get();
 
 if (existingLock.exists) {
-  return res.status(400).json({
-    success: false,
-    error: "Payout already processing"
-  });
-}
 
+  const createdAt =
+    existingLock.data().createdAt || 0;
+
+  // مدة صلاحية القفل: 5 دقائق
+  const isLocked =
+    Date.now() - createdAt < 5 * 60 * 1000;
+
+  if (isLocked) {
+    return res.status(400).json({
+      success: false,
+      error: "Payout already processing"
+    });
+  }
+
+  // حذف lock قديم عالق
+  await payoutLockRef.delete();
+}
 // إنشاء القفل
 await payoutLockRef.set({
   createdAt: Date.now()
@@ -400,7 +412,13 @@ await payoutLockRef.set({
         error: "Missing data"
       });
     }
+finally {
 
+  try {
+    await payoutLockRef.delete();
+  } catch {}
+
+}
     // جلب الكتب
     const booksSnap = await db.collection("books")
       .where("owner", "==", username)
