@@ -590,126 +590,166 @@ async function sendPi(destination, amount) {
 }
 
 /* ================= PAYOUT REQUEST ================= */
+/* ================= AUTO PAYOUT ================= */
+
 app.post("/request-payout", async (req, res) => {
   try {
 
-    const { userUid, accessToken } = req.body;
+   const { username, userUid, walletAddress } = req.body;
 
-    if (!userUid || !accessToken) {
+// ================= PAYOUT LOCK =================
+
+const payoutLockRef = db
+  .collection("payoutLocks")
+  .doc(userUid);
+
+const existingLock = await payoutLockRef.get();
+
+if (existingLock.exists) {
+
+  const createdAt =
+    existingLock.data().createdAt || 0;
+
+  // مدة صلاحية القفل: 5 دقائق
+  const isLocked =
+    Date.now() - createdAt < 5 * 60 * 1000;
+
+  if (isLocked) {
+    return res.status(400).json({
+      success: false,
+      error: "Payout already processing"
+    });
+  }
+
+  // حذف lock قديم عالق
+  await payoutLockRef.delete();
+}
+// إنشاء القفل
+await payoutLockRef.set({
+  createdAt: Date.now()
+});
+    
+    if (!username || !walletAddress) {
       return res.status(400).json({
+        success: false,
         error: "Missing data"
       });
     }
+finally {
 
-    // التحقق من هوية المستخدم مع Pi
-    const piAuth = await fetch(
-      "https://api.minepi.com/v2/me",
-      {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${accessToken}`
-        }
-      }
-    );
+  try {
+    await payoutLockRef.delete();
+  } catch {}
 
-    if (!piAuth.ok) {
-      return res.status(401).json({
-        error: "Invalid access token"
-      });
-    }
-
-    const piUser = await piAuth.json();
-
-    if (piUser.uid !== userUid) {
-      return res.status(403).json({
-        error: "User mismatch"
-      });
-    }
-
-    const userDoc = await db
-      .collection("users")
-      .doc(userUid)
-      .get();
-
-    if (!userDoc.exists) {
-      return res.status(404).json({
-        error: "User not found"
-      });
-    }
-
-    const walletAddress =
-      userDoc.data().walletAddress;
-
-    if (!walletAddress) {
-      return res.status(400).json({
-        error: "Wallet not configured"
-      });
-    }
-
-    
-    // ✅ تحقق محفظة Pi
-    
-
-    const booksSnap = await db
-      .collection("books")
-      .where("ownerUid", "==", userUid)
-      .get();
+}
+    // جلب الكتب
+    const booksSnap = await db.collection("books")
+  .where("ownerUid", "==", userUid)
+  .get();
 
     let totalEarnings = 0;
 
-const booksToReset = [];
+    booksSnap.forEach(doc => {
+      const book = doc.data();
 
-booksSnap.forEach(doc => {
-  const book = doc.data();
-  const sales = book.salesCount || 0;
+      const sales = book.salesCount || 0;
 
-  totalEarnings += sales * book.price * 0.7;
+      const profit = sales * book.price * 0.7;
 
-  booksToReset.push(doc.ref);
-});
+      totalEarnings += profit;
+    });
+
+    totalEarnings = Number(totalEarnings.toFixed(2));
 
     if (totalEarnings < 5) {
-      return res.status(400).json({ error: "Minimum payout is 5 Pi" });
+      return res.status(400).json({
+        success: false,
+        error: "Minimum payout is 5 Pi"
+      });
     }
 
-   const paymentResult =
-  await sendPi(
-    walletAddress,
-    totalEarnings.toFixed(2)
-  );
+    // ================= إرسال Pi =================
 
-// تصفير المبيعات بعد نجاح التحويل فقط
-const batch = db.batch();
+    const sourceAccount = await serverStellar.loadAccount(
+      appWallet.publicKey()
+    );
 
-for (const ref of booksToReset) {
-  batch.update(ref, {
-    salesCount: 0
-  });
-}
+    const fee = await serverStellar.fetchBaseFee();
 
-await batch.commit();
+    const transaction = new StellarSdk.TransactionBuilder(
+      sourceAccount,
+      {
+        fee,
+        networkPassphrase: "Pi Testnet"
+      }
+    )
+      .addOperation(
+        StellarSdk.Operation.payment({
+          destination: walletAddress,
+          asset: StellarSdk.Asset.native(),
+          amount: totalEarnings.toString()
+        })
+      )
+      .setTimeout(30)
+      .build();
 
-await db.collection("payouts").add({
+    transaction.sign(appWallet);
+
+    const result = await serverStellar.submitTransaction(
+      transaction
+    );
+
+    // ================= تصفير المبيعات =================
+
+    const batch = db.batch();
+
+    booksSnap.forEach(doc => {
+      batch.update(doc.ref, {
+        salesCount: 0
+      });
+    });
+
+    await batch.commit();
+
+    // ================= حفظ السحب =================
+
+   await db.collection("payouts").add({
+  username,
   userUid,
-  walletAddress,
-  amount: Number(
-    totalEarnings.toFixed(2)
-  ),
-  txid: paymentResult.hash,
-  paidAt: Date.now()
-});
+      walletAddress,
+      amount: totalEarnings,
+      txid: result.hash,
+      createdAt: Date.now()
+    });
 
-res.json({
-  success: true,
-  txid: paymentResult.hash,
-  amount: totalEarnings.toFixed(2)
-});
+    
+    // حذف القفل بعد النجاح
+await payoutLockRef.delete();
 
-  } catch (err) {
-    console.error("Payout error:", err);
-    res.status(500).json({ error: "Server error" });
+    
+    res.json({
+      success: true,
+      amount: totalEarnings,
+      txid: result.hash
+    });
+
+  } catch (e) {
+
+try {
+  await db.collection("payoutLocks")
+  .doc(req.body.userUid)
+    .delete();
+} catch {}
+    
+    console.error("AUTO PAYOUT ERROR:", e);
+
+    res.status(500).json({
+      success: false,
+      error: e.message
+    });
   }
 });
+
 
 
 /* ================= START ================= */
