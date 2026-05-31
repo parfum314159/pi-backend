@@ -46,7 +46,7 @@ const PI_API_URL = "https://api.minepi.com/v2";
 
 /* ================= STELLAR ================= */
 const server = new StellarSdk.Horizon.Server(
-  "https://api.mainnet.minepi.com"
+  "https://api.testnet.minepi.com"
 );
 
 const APP_SECRET =
