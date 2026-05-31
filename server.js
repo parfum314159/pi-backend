@@ -1,4 +1,4 @@
-import StellarSdk from "stellar-sdk";
+import * as StellarSdk from "@stellar/stellar-sdk";
 import express from "express";
 import admin from "firebase-admin";
 import fetch from "node-fetch";
