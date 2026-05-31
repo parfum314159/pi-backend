@@ -1,9 +1,10 @@
+import * as StellarSdk from "@stellar/stellar-sdk";
 import express from "express";
 import admin from "firebase-admin";
 import fetch from "node-fetch";
 import cors from "cors";
 import cloudinary from 'cloudinary';
-import StellarSdk from "stellar-sdk";
+
 cloudinary.v2.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
