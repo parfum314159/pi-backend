@@ -44,17 +44,13 @@ const PI_API_KEY = process.env.PI_API_KEY;
 const PI_API_URL = "https://api.minepi.com/v2";
 
 /* ================= STELLAR ================= */
-const server = new StellarSdk.Horizon.Server(
+const serverStellar = new StellarSdk.Horizon.Server(
   "https://api.testnet.minepi.com"
 );
 
-const APP_SECRET =
-  process.env.PI_WALLET_SECRET;
-
-const APP_KEYPAIR =
-  StellarSdk.Keypair.fromSecret(
-    APP_SECRET
-  );
+const appWallet = StellarSdk.Keypair.fromSecret(
+  process.env.PI_WALLET_SECRET
+);
 
 /* ================= ROOT ================= */
 app.get("/", (_, res) => res.send("Backend running"));
