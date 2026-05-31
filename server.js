@@ -573,7 +573,7 @@ async function sendPi(destination, amount) {
       {
         fee,
         networkPassphrase:
-          "Pi Network"
+          "Pi Testnet"
       }
     )
       .addOperation(
