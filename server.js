@@ -63,37 +63,17 @@ app.get("/", (_, res) => res.send("Backend running"));
 /* ================= BOOKS ================= */
 app.get("/books", async (_, res) => {
   try {
+
     const snap = await db
-  .collection("books")
-  .where("approved", "==", true)
-  .orderBy("createdAt", "desc")
-  .get();
+      .collection("books")
+      .where("approved", "==", true)
+      .orderBy("createdAt", "desc")
+      .get();
 
-    const books = await Promise.all(
-      snap.docs.map(async (doc) => {
-
-        const ratingsSnap = await db
-          .collection("ratings")
-          .doc(doc.id)
-          .collection("votes")
-          .get();
-
-        let likes = 0;
-        let dislikes = 0;
-
-        ratingsSnap.forEach(v => {
-          if (v.data().vote === "like") likes++;
-          if (v.data().vote === "dislike") dislikes++;
-        });
-
-        return {
-          id: doc.id,
-          ...doc.data(),
-          likes,
-          dislikes
-        };
-      })
-    );
+    const books = snap.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
 
     res.json({
       success: true,
@@ -107,7 +87,6 @@ app.get("/books", async (_, res) => {
     });
   }
 });
-
 
 // ================= GET SINGLE BOOK =================
 app.get("/book", async (req, res) => {
