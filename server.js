@@ -284,7 +284,7 @@ withdrawableEarnings: 0,
  approved: false,
   reviewed: false,
   reviewMessage: "",
-  approved: false, // ينتظر المراجعة
+ 
 
   createdAt: Date.now()
 });
@@ -333,6 +333,9 @@ app.post("/my-notifications", async (req, res) => {
     });
   }
 });
+
+
+
 
 
 
