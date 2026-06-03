@@ -379,6 +379,17 @@ async function handlePendingPayment(paymentId) {
 
     const bookRef = db.collection("books").doc(bookId);
 
+const pendingRef =
+  db.collection("pendingPayments")
+    .doc(paymentId);
+
+const pendingDoc =
+  await pendingRef.get();
+
+if (!pendingDoc.exists) {
+  return;
+}
+    
     await db.runTransaction(async (t) => {
   const bookSnap = await t.get(bookRef);
 const price = Number(bookSnap.data().price || 0);
@@ -400,6 +411,8 @@ t.update(bookRef, {
   );
 });
 
+await pendingRef.delete();
+    
     console.log("✅ Pending payment resolved:", paymentId);
 
   } catch (e) {
