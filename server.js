@@ -281,7 +281,9 @@ if (isNaN(bookPrice) || bookPrice <= 0) {
   ownerUid,
   salesCount: 0,
 withdrawableEarnings: 0,
-
+ approved: false,
+  reviewed: false,
+  reviewMessage: "",
   approved: false, // ينتظر المراجعة
 
   createdAt: Date.now()
@@ -292,6 +294,47 @@ withdrawableEarnings: 0,
     res.status(500).json({ error: e.message });
   }
 });
+
+
+
+app.post("/my-notifications", async (req, res) => {
+  try {
+
+    const { userUid } = req.body;
+
+    if (!userUid) {
+      return res.status(400).json({
+        error: "Missing userUid"
+      });
+    }
+
+    const snap = await db
+      .collection("books")
+      .where("ownerUid", "==", userUid)
+      .where("reviewed", "==", true)
+      .get();
+
+    const notifications = snap.docs.map(doc => ({
+      id: doc.id,
+      title: doc.data().title,
+      approved: doc.data().approved,
+      reviewMessage:
+        doc.data().reviewMessage || ""
+    }));
+
+    res.json({
+      success: true,
+      notifications
+    });
+
+  } catch (e) {
+    res.status(500).json({
+      error: e.message
+    });
+  }
+});
+
+
 
 /* ================= RATINGS ================= */
 app.post("/rate-book", async (req, res) => {
