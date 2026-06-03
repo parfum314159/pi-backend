@@ -279,6 +279,10 @@ if (isNaN(bookPrice) || bookPrice <= 0) {
   pdf,
   owner,
   ownerUid,
+
+      likes: 0,
+dislikes: 0,
+      
   salesCount: 0,
 withdrawableEarnings: 0,
  approved: false,
@@ -342,53 +346,74 @@ app.post("/my-notifications", async (req, res) => {
 /* ================= RATINGS ================= */
 app.post("/rate-book", async (req, res) => {
   try {
+
     const { bookId, voteType, userUid } = req.body;
 
-    if (!["like", "dislike"].includes(voteType)) {
-  return res.status(400).json({ error: "Invalid vote" });
-}
-    
     if (!bookId || !voteType || !userUid) {
-      return res.status(400).json({ error: "Missing data" });
+      return res.status(400).json({
+        error: "Missing data"
+      });
     }
 
-    await db
+    const voteRef = db
       .collection("ratings")
       .doc(bookId)
       .collection("votes")
-      .doc(userUid)
-      .set(
-  {
-    vote: voteType,
-    votedAt: Date.now()
-  },
-  { merge: true }
-);
-    res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
+      .doc(userUid);
 
-app.post("/book-ratings", async (req, res) => {
-  try {
-    const { bookId, userUid } = req.body;
-    const snap = await db
-      .collection("ratings")
-      .doc(bookId)
-      .collection("votes")
-      .get();
+    const oldVote = await voteRef.get();
 
-    let likes = 0, dislikes = 0, userVote = null;
-    snap.forEach(d => {
-      if (d.data().vote === "like") likes++;
-      if (d.data().vote === "dislike") dislikes++;
-      if (d.id === userUid) userVote = d.data().vote;
+    const bookRef =
+      db.collection("books")
+        .doc(bookId);
+
+    await db.runTransaction(async (t) => {
+
+      const bookSnap =
+        await t.get(bookRef);
+
+      if (!bookSnap.exists) {
+        throw new Error("Book not found");
+      }
+
+      let likes =
+        bookSnap.data().likes || 0;
+
+      let dislikes =
+        bookSnap.data().dislikes || 0;
+
+      if (oldVote.exists) {
+
+        const previous =
+          oldVote.data().vote;
+
+        if (previous === "like") likes--;
+        if (previous === "dislike") dislikes--;
+      }
+
+      if (voteType === "like") likes++;
+      if (voteType === "dislike") dislikes++;
+
+      t.update(bookRef, {
+        likes,
+        dislikes
+      });
+
+      t.set(voteRef, {
+        vote: voteType,
+        votedAt: Date.now()
+      });
+
     });
 
-    res.json({ success: true, likes, dislikes, userVote });
+    res.json({
+      success: true
+    });
+
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json({
+      error: e.message
+    });
   }
 });
 
