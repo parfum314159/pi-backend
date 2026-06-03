@@ -280,6 +280,7 @@ if (isNaN(bookPrice) || bookPrice <= 0) {
   owner,
   ownerUid,
   salesCount: 0,
+withdrawableEarnings: 0,
 
   approved: false, // ينتظر المراجعة
 
@@ -379,9 +380,16 @@ async function handlePendingPayment(paymentId) {
     const bookRef = db.collection("books").doc(bookId);
 
     await db.runTransaction(async (t) => {
-  t.update(bookRef, {
-    salesCount: admin.firestore.FieldValue.increment(1)
-  });
+  const bookSnap = await t.get(bookRef);
+const price = Number(bookSnap.data().price || 0);
+
+t.update(bookRef, {
+  salesCount: admin.firestore.FieldValue.increment(1),
+  withdrawableEarnings:
+    admin.firestore.FieldValue.increment(
+      price * 0.7
+    )
+});
 
   t.set(
     db.collection("purchases")
@@ -745,9 +753,8 @@ const booksToReset = [];
 
 booksSnap.forEach(doc => {
   const book = doc.data();
-  const sales = book.salesCount || 0;
-
-  totalEarnings += sales * book.price * 0.7;
+totalEarnings +=
+  Number(book.withdrawableEarnings || 0);
 
   booksToReset.push(doc.ref);
 });
@@ -767,8 +774,8 @@ const batch = db.batch();
 
 for (const ref of booksToReset) {
   batch.update(ref, {
-    salesCount: 0
-  });
+  withdrawableEarnings: 0
+});
 }
 
 await batch.commit();
@@ -906,10 +913,16 @@ if (!bookId || !userUid) {
 
     const bookRef = db.collection("books").doc(bookId);
 await db.runTransaction(async (t) => {
-  t.update(bookRef, {
-    salesCount: admin.firestore.FieldValue.increment(1)
-  });
+  const bookSnap = await t.get(bookRef);
+const price = Number(bookSnap.data().price || 0);
 
+t.update(bookRef, {
+  salesCount: admin.firestore.FieldValue.increment(1),
+  withdrawableEarnings:
+    admin.firestore.FieldValue.increment(
+      price * 0.7
+    )
+});
   t.set(
     db.collection("purchases")
       .doc(userUid)
