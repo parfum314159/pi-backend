@@ -960,6 +960,22 @@ app.post("/approve-payment", async (req, res) => {
     const bookId = paymentData.metadata?.bookId;
     const userUid = paymentData.metadata?.userUid;
 
+
+    // منع شراء نفس الكتاب مرتين
+const existingPurchase = await db
+  .collection("purchases")
+  .doc(userUid)
+  .collection("books")
+  .doc(bookId)
+  .get();
+
+if (existingPurchase.exists) {
+  return res.status(400).json({
+    error: "Book already purchased"
+  });
+}
+    
+    
     if (!bookId || !userUid) {
       throw new Error("Missing metadata");
     }
