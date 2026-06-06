@@ -272,6 +272,15 @@ withdrawableEarnings: 0,
   createdAt: Date.now()
 });
 
+
+    await db.doc("stats/platform").set(
+  {
+    totalBooks:
+      admin.firestore.FieldValue.increment(1)
+  },
+  { merge: true }
+);
+    
     res.json({ success: true, bookId: doc.id });
   } catch (e) {
     res.status(500).json({ error: e.message });
