@@ -572,6 +572,8 @@ app.post("/my-purchases", async (req, res) => {
       if (b.exists) books.push({ id: b.id, ...b.data() });
     }
 
+    books.reverse();
+    
     res.json({ success: true, books });
   } catch (e) {
     res.status(500).json({ error: e.message });
