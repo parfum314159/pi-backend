@@ -564,7 +564,8 @@ app.post("/my-purchases", async (req, res) => {
       .collection("purchases")
       .doc(userUid)
       .collection("books")
-      .get();
+.orderBy("purchasedAt", "desc")
+.get();
 
     const books = [];
     for (const d of snap.docs) {
@@ -572,7 +573,7 @@ app.post("/my-purchases", async (req, res) => {
       if (b.exists) books.push({ id: b.id, ...b.data() });
     }
 
-    books.reverse();
+   
     
     res.json({ success: true, books });
   } catch (e) {
