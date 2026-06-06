@@ -662,12 +662,25 @@ if (piUser.uid !== userUid) {
       });
     }
 
-    await db.collection("users")
-      .doc(userUid)
-      .set(
-        { walletAddress },
-        { merge: true }
-      );
+   const userRef =
+  db.collection("users").doc(userUid);
+
+const userDoc =
+  await userRef.get();
+
+if (!userDoc.exists) {
+
+  await db.doc("stats/platform").set({
+    totalUsers:
+      admin.firestore.FieldValue.increment(1)
+  }, { merge:true });
+
+}
+
+await userRef.set(
+  { walletAddress },
+  { merge:true }
+);
 
     res.json({ success: true });
 
@@ -914,6 +927,13 @@ await db.collection("payouts").add({
   paidAt: Date.now()
 });
 
+    await db.doc("stats/platform").set({
+  totalPayouts:
+    admin.firestore.FieldValue.increment(
+      Number(totalEarnings.toFixed(2))
+    )
+}, { merge:true });
+
 await payoutLockRef.delete();
     
 res.json({
@@ -1076,15 +1096,29 @@ await db.runTransaction(async (t) => {
   const price =
     Number(bookSnap.data().price || 0);
 
-  t.update(bookRef, {
-    salesCount:
-      admin.firestore.FieldValue.increment(1),
+  const sellerProfit = price * 0.7;
+const platformProfit = price * 0.3;
 
-    withdrawableEarnings:
+t.update(bookRef, {
+  salesCount:
+    admin.firestore.FieldValue.increment(1),
+
+  withdrawableEarnings:
+    admin.firestore.FieldValue.increment(
+      sellerProfit
+    )
+});
+
+t.set(
+  db.doc("stats/platform"),
+  {
+    platformProfit:
       admin.firestore.FieldValue.increment(
-        price * 0.7
+        platformProfit
       )
-  });
+  },
+  { merge:true }
+);
 
   t.set(purchaseRef, {
     purchasedAt: Date.now()
@@ -1150,6 +1184,33 @@ app.post("/check-purchase", async (req, res) => {
 });
 
 
+
+
+app.get("/platform-stats", async (req,res) => {
+
+  try {
+
+    const doc =
+      await db.doc("stats/platform").get();
+
+    res.json({
+      success:true,
+      stats: doc.exists
+        ? doc.data()
+        : {}
+    });
+
+  } catch(e){
+
+    res.status(500).json({
+      error:e.message
+    });
+
+  }
+
+});
+
+        
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Backend running on port", PORT));
 
