@@ -121,7 +121,42 @@ if (!doc.data().approved) {
 // رفع صورة الغلاف
 app.post("/upload-cover", async (req, res) => {
   try {
-   const { file } = req.body;
+
+    const {
+      file,
+      userUid,
+      accessToken
+    } = req.body;
+
+    if (!file || !userUid || !accessToken) {
+      return res.status(400).json({
+        error: "Missing data"
+      });
+    }
+
+    const piAuth = await fetch(
+      "https://api.minepi.com/v2/me",
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${accessToken}`
+        }
+      }
+    );
+
+    if (!piAuth.ok) {
+      return res.status(401).json({
+        error: "Invalid access token"
+      });
+    }
+
+    const piUser = await piAuth.json();
+
+    if (piUser.uid !== userUid) {
+      return res.status(403).json({
+        error: "User mismatch"
+      });
+    }
 
 // حد أقصى 5MB للصور
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
@@ -167,8 +202,41 @@ if (!file.startsWith("data:image/")) {
 // رفع PDF
 app.post("/upload-pdf", async (req, res) => {
   try {
-   const { file } = req.body;
+   const {
+  file,
+  userUid,
+  accessToken
+} = req.body;
 
+if (!file || !userUid || !accessToken) {
+  return res.status(400).json({
+    error: "Missing data"
+  });
+}
+
+const piAuth = await fetch(
+  "https://api.minepi.com/v2/me",
+  {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    }
+  }
+);
+
+if (!piAuth.ok) {
+  return res.status(401).json({
+    error: "Invalid access token"
+  });
+}
+
+const piUser = await piAuth.json();
+
+if (piUser.uid !== userUid) {
+  return res.status(403).json({
+    error: "User mismatch"
+  });
+}
     // حد أقصى 20MB
 const MAX_SIZE = 20 * 1024 * 1024;
 
@@ -218,10 +286,48 @@ if (!file.startsWith("data:application/pdf")) {
 /* ================= SAVE BOOK ================= */
 app.post("/save-book", async (req, res) => {
   try {
-    const {
-      title, price, description, language, pageCount,
-      cover, pdf, owner, ownerUid
-    } = req.body;
+   const {
+  title,
+  price,
+  description,
+  language,
+  pageCount,
+  cover,
+  pdf,
+  owner,
+  ownerUid,
+  accessToken
+} = req.body;
+
+    if (!accessToken) {
+  return res.status(401).json({
+    error: "Missing access token"
+  });
+}
+
+const piAuth = await fetch(
+  "https://api.minepi.com/v2/me",
+  {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    }
+  }
+);
+
+if (!piAuth.ok) {
+  return res.status(401).json({
+    error: "Invalid access token"
+  });
+}
+
+const piUser = await piAuth.json();
+
+if (piUser.uid !== ownerUid) {
+  return res.status(403).json({
+    error: "User mismatch"
+  });
+}
 
     if (!title || !price || !cover || !pdf || !owner || !ownerUid) {
       return res.status(400).json({ error: "Missing data" });
@@ -753,8 +859,40 @@ app.post("/get-pdf", async (req, res) => {
 /* ================= SALES ================= */
 app.post("/my-sales", async (req, res) => {
   try {
-    const { username } = req.body;
-    const snap = await db.collection("books").where("owner", "==", username).get();
+    const {
+  userUid,
+  accessToken
+} = req.body;
+    if (!userUid || !accessToken) {
+  return res.status(400).json({
+    error: "Missing data"
+  });
+}
+
+const piAuth = await fetch(
+  "https://api.minepi.com/v2/me",
+  {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    }
+  }
+);
+
+if (!piAuth.ok) {
+  return res.status(401).json({
+    error: "Invalid access token"
+  });
+}
+
+const piUser = await piAuth.json();
+
+if (piUser.uid !== userUid) {
+  return res.status(403).json({
+    error: "User mismatch"
+  });
+}
+    const snap = await db.collection("books").where("ownerUid", "==", userUid).get();
     const books = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     res.json({ success: true, books });
   } catch (e) {
@@ -1294,8 +1432,40 @@ t.set(
 });
 
 // جلب الدفعات المعلقة للمستخدم (للحل التلقائي)
-app.get("/pending-payments", async (req, res) => {
-  const userUid = String(req.query.userUid || "");
+app.post("/pending-payments", async (req, res) => {
+  const {
+  userUid,
+  accessToken
+} = req.body;
+  if (!userUid || !accessToken) {
+  return res.status(400).json({
+    error: "Missing data"
+  });
+}
+
+const piAuth = await fetch(
+  "https://api.minepi.com/v2/me",
+  {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    }
+  }
+);
+
+if (!piAuth.ok) {
+  return res.status(401).json({
+    error: "Invalid access token"
+  });
+}
+
+const piUser = await piAuth.json();
+
+if (piUser.uid !== userUid) {
+  return res.status(403).json({
+    error: "User mismatch"
+  });
+}
   if (!userUid || !db) return res.status(400).json({ success: false, error: "missing userUid" });
   try {
     const snap = await db.collection("pendingPayments").where("userUid", "==", userUid).get();
