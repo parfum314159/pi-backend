@@ -238,22 +238,14 @@ if (!file.startsWith("data:application/pdf")) {
 });
 
 
+
 /* ================= SAVE BOOK ================= */
 app.post("/save-book", async (req, res) => {
   try {
-   const {
-  title,
-  price,
-  description,
-  language,
-  pageCount,
-  cover,
-  pdf,
-  owner,
-  ownerUid
-} = req.body;
-
-    
+    const {
+      title, price, description, language, pageCount,
+      cover, pdf, owner, ownerUid
+    } = req.body;
 
     if (!title || !price || !cover || !pdf || !owner || !ownerUid) {
       return res.status(400).json({ error: "Missing data" });
@@ -381,6 +373,7 @@ app.post("/my-notifications", async (req, res) => {
     });
   }
 });
+
 
 
 
