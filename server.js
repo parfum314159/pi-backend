@@ -167,31 +167,8 @@ if (!file.startsWith("data:image/")) {
 // رفع PDF
 app.post("/upload-pdf", async (req, res) => {
   try {
-    const { file } = req.body;
+   const { file } = req.body;
 
-const piAuth = await fetch(
-  "https://api.minepi.com/v2/me",
-  {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${accessToken}`
-    }
-  }
-);
-
-if (!piAuth.ok) {
-  return res.status(401).json({
-    error: "Invalid access token"
-  });
-}
-
-const piUser = await piAuth.json();
-
-if (piUser.uid !== userUid) {
-  return res.status(403).json({
-    error: "User mismatch"
-  });
-}
     // حد أقصى 20MB
 const MAX_SIZE = 20 * 1024 * 1024;
 
@@ -236,7 +213,6 @@ if (!file.startsWith("data:application/pdf")) {
     res.status(500).json({ error: err.message });
   }
 });
-
 
 
 /* ================= SAVE BOOK ================= */
