@@ -300,12 +300,35 @@ app.post("/save-book", async (req, res) => {
   ownerUid,
   accessToken
 } = req.body;
+if (!accessToken) {
+  return res.status(401).json({
+    error: "Missing access token"
+  });
+}
 
+const piAuth = await fetch(
+  "https://api.minepi.com/v2/me",
+  {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    }
+  }
+);
 
-const piUser = await verifyPiUser(req, res);
+if (!piAuth.ok) {
+  return res.status(401).json({
+    error: "Invalid access token"
+  });
+}
 
-if (!piUser) return;
-    
+const piUser = await piAuth.json();
+
+if (piUser.uid !== ownerUid) {
+  return res.status(403).json({
+    error: "User mismatch"
+  });
+}
     if (!title || !price || !cover || !pdf || !owner || !ownerUid) {
       return res.status(400).json({ error: "Missing data" });
     }
@@ -369,6 +392,7 @@ withdrawableEarnings: 0,
     res.status(500).json({ error: e.message });
   }
 });
+
 
 
 
