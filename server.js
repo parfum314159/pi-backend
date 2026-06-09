@@ -300,11 +300,7 @@ app.post("/save-book", async (req, res) => {
   ownerUid,
   accessToken
 } = req.body;
-if (!accessToken) {
-  return res.status(401).json({
-    error: "Missing access token"
-  });
-}
+
 
 const piUser = await verifyPiUser(req, res);
 
