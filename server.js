@@ -57,6 +57,48 @@ const APP_KEYPAIR =
     APP_SECRET
   );
 
+/* ================= PI AUTH MIDDLEWARE ================= */
+
+async function verifyPiUser(req, res) {
+
+  const { accessToken, userUid } = req.body;
+
+  if (!accessToken || !userUid) {
+    res.status(400).json({
+      error: "Missing data"
+    });
+    return null;
+  }
+
+  const response = await fetch(
+    "https://api.minepi.com/v2/me",
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`
+      }
+    }
+  );
+
+  if (!response.ok) {
+    res.status(401).json({
+      error: "Invalid access token"
+    });
+    return null;
+  }
+
+  const piUser = await response.json();
+
+  if (piUser.uid !== userUid) {
+    res.status(403).json({
+      error: "User mismatch"
+    });
+    return null;
+  }
+
+  return piUser;
+}
+
 /* ================= ROOT ================= */
 app.get("/", (_, res) => res.send("Backend running"));
 
@@ -133,29 +175,9 @@ if (!file || !accessToken || !userUid) {
   });
 }
 
-const piAuth = await fetch(
-  "https://api.minepi.com/v2/me",
-  {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${accessToken}`
-    }
-  }
-);
+const piUser = await verifyPiUser(req, res);
 
-if (!piAuth.ok) {
-  return res.status(401).json({
-    error: "Invalid access token"
-  });
-}
-
-const piUser = await piAuth.json();
-
-if (piUser.uid !== userUid) {
-  return res.status(403).json({
-    error: "User mismatch"
-  });
-}
+if (!piUser) return;
 
 // حد أقصى 5MB للصور
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
@@ -213,29 +235,9 @@ if (!file || !accessToken || !userUid) {
   });
 }
 
-const piAuth = await fetch(
-  "https://api.minepi.com/v2/me",
-  {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${accessToken}`
-    }
-  }
-);
+const piUser = await verifyPiUser(req, res);
 
-if (!piAuth.ok) {
-  return res.status(401).json({
-    error: "Invalid access token"
-  });
-}
-
-const piUser = await piAuth.json();
-
-if (piUser.uid !== userUid) {
-  return res.status(403).json({
-    error: "User mismatch"
-  });
-}
+if (!piUser) return;
 
     // حد أقصى 20MB
 const MAX_SIZE = 20 * 1024 * 1024;
@@ -304,29 +306,10 @@ if (!accessToken) {
   });
 }
 
-const piAuth = await fetch(
-  "https://api.minepi.com/v2/me",
-  {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${accessToken}`
-    }
-  }
-);
+const piUser = await verifyPiUser(req, res);
 
-if (!piAuth.ok) {
-  return res.status(401).json({
-    error: "Invalid access token"
-  });
-}
-
-const piUser = await piAuth.json();
-
-if (piUser.uid !== ownerUid) {
-  return res.status(403).json({
-    error: "User mismatch"
-  });
-}
+if (!piUser) return;
+    
     if (!title || !price || !cover || !pdf || !owner || !ownerUid) {
       return res.status(400).json({ error: "Missing data" });
     }
@@ -404,29 +387,9 @@ app.post("/my-notifications", async (req, res) => {
       });
     }
 
-    const piAuth = await fetch(
-      "https://api.minepi.com/v2/me",
-      {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${accessToken}`
-        }
-      }
-    );
+    const piUser = await verifyPiUser(req, res);
 
-    if (!piAuth.ok) {
-      return res.status(401).json({
-        error: "Invalid access token"
-      });
-    }
-
-    const piUser = await piAuth.json();
-
-    if (piUser.uid !== userUid) {
-      return res.status(403).json({
-        error: "User mismatch"
-      });
-    }
+if (!piUser) return;
 
     const snap = await db
       .collection("books")
@@ -469,31 +432,9 @@ if (!bookId || !userUid || !accessToken) {
   });
 }
 
-const piAuth = await fetch(
-  "https://api.minepi.com/v2/me",
-  {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${accessToken}`
-    }
-  }
-);
+const piUser = await verifyPiUser(req, res);
 
-if (!piAuth.ok) {
-  return res.status(401).json({
-    success: false,
-    error: "Invalid access token"
-  });
-}
-
-const piUser = await piAuth.json();
-
-if (piUser.uid !== userUid) {
-  return res.status(403).json({
-    success: false,
-    error: "User mismatch"
-  });
-}
+if (!piUser) return;
 
     const voteDoc = await db
       .collection("ratings")
@@ -542,29 +483,9 @@ if (
   });
 }
 
-    const piAuth = await fetch(
-  "https://api.minepi.com/v2/me",
-  {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${accessToken}`
-    }
-  }
-);
+    const piUser = await verifyPiUser(req, res);
 
-if (!piAuth.ok) {
-  return res.status(401).json({
-    error: "Invalid access token"
-  });
-}
-
-const piUser = await piAuth.json();
-
-if (piUser.uid !== userUid) {
-  return res.status(403).json({
-    error: "User mismatch"
-  });
-}
+if (!piUser) return;
 
     const voteRef = db
       .collection("ratings")
@@ -730,29 +651,9 @@ app.post("/my-purchases", async (req, res) => {
       });
     }
 
-    const piAuth = await fetch(
-      "https://api.minepi.com/v2/me",
-      {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${accessToken}`
-        }
-      }
-    );
+    const piUser = await verifyPiUser(req, res);
 
-    if (!piAuth.ok) {
-      return res.status(401).json({
-        error: "Invalid access token"
-      });
-    }
-
-    const piUser = await piAuth.json();
-
-    if (piUser.uid !== userUid) {
-      return res.status(403).json({
-        error: "User mismatch"
-      });
-    }
+if (!piUser) return;
 
     const snap = await db
       .collection("purchases")
@@ -798,29 +699,9 @@ app.post("/get-pdf", async (req, res) => {
       });
     }
 
-    const piAuth = await fetch(
-      "https://api.minepi.com/v2/me",
-      {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${accessToken}`
-        }
-      }
-    );
+    const piUser = await verifyPiUser(req, res);
 
-    if (!piAuth.ok) {
-      return res.status(401).json({
-        error: "Invalid access token"
-      });
-    }
-
-    const piUser = await piAuth.json();
-
-    if (piUser.uid !== userUid) {
-      return res.status(403).json({
-        error: "User mismatch"
-      });
-    }
+if (!piUser) return;
 
     const p = await db
       .collection("purchases")
@@ -867,29 +748,9 @@ app.post("/my-sales", async (req, res) => {
       });
     }
 
-    const piAuth = await fetch(
-      "https://api.minepi.com/v2/me",
-      {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${accessToken}`
-        }
-      }
-    );
+   const piUser = await verifyPiUser(req, res);
 
-    if (!piAuth.ok) {
-      return res.status(401).json({
-        error: "Invalid access token"
-      });
-    }
-
-    const piUser = await piAuth.json();
-
-    if (piUser.uid !== userUid) {
-      return res.status(403).json({
-        error: "User mismatch"
-      });
-    }
+if (!piUser) return;
 
     const snap = await db
       .collection("books")
@@ -934,29 +795,9 @@ app.post("/save-wallet", async (req, res) => {
   });
 }
 
-const piAuth = await fetch(
-  "https://api.minepi.com/v2/me",
-  {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${accessToken}`
-    }
-  }
-);
+const piUser = await verifyPiUser(req, res);
 
-if (!piAuth.ok) {
-  return res.status(401).json({
-    error: "Invalid access token"
-  });
-}
-
-const piUser = await piAuth.json();
-
-if (piUser.uid !== userUid) {
-  return res.status(403).json({
-    error: "User mismatch"
-  });
-}
+if (!piUser) return;
 
     if (!userUid || !walletAddress) {
       return res.status(400).json({
@@ -1014,29 +855,9 @@ app.post("/get-wallet", async (req, res) => {
       });
     }
 
-    const piAuth = await fetch(
-      "https://api.minepi.com/v2/me",
-      {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${accessToken}`
-        }
-      }
-    );
+    const piUser = await verifyPiUser(req, res);
 
-    if (!piAuth.ok) {
-      return res.status(401).json({
-        error: "Invalid access token"
-      });
-    }
-
-    const piUser = await piAuth.json();
-
-    if (piUser.uid !== userUid) {
-      return res.status(403).json({
-        error: "User mismatch"
-      });
-    }
+if (!piUser) return;
 
     const userDoc = await db
       .collection("users")
@@ -1108,29 +929,9 @@ app.post("/request-payout", async (req, res) => {
     }
 
     // التحقق من هوية المستخدم مع Pi
-    const piAuth = await fetch(
-      "https://api.minepi.com/v2/me",
-      {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${accessToken}`
-        }
-      }
-    );
+    const piUser = await verifyPiUser(req, res);
 
-    if (!piAuth.ok) {
-      return res.status(401).json({
-        error: "Invalid access token"
-      });
-    }
-
-    const piUser = await piAuth.json();
-
-    if (piUser.uid !== userUid) {
-      return res.status(403).json({
-        error: "User mismatch"
-      });
-    }
+if (!piUser) return;
 
     const userDoc = await db
       .collection("users")
@@ -1471,29 +1272,9 @@ app.post("/check-purchase", async (req, res) => {
       });
     }
 
-    const piAuth = await fetch(
-      "https://api.minepi.com/v2/me",
-      {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${accessToken}`
-        }
-      }
-    );
+    const piUser = await verifyPiUser(req, res);
 
-    if (!piAuth.ok) {
-      return res.status(401).json({
-        error: "Invalid access token"
-      });
-    }
-
-    const piUser = await piAuth.json();
-
-    if (piUser.uid !== userUid) {
-      return res.status(403).json({
-        error: "User mismatch"
-      });
-    }
+if (!piUser) return;
 
     const purchaseDoc = await db
       .collection("purchases")
