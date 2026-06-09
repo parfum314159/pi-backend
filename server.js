@@ -306,29 +306,10 @@ if (!accessToken) {
   });
 }
 
-const piAuth = await fetch(
-  "https://api.minepi.com/v2/me",
-  {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${accessToken}`
-    }
-  }
-);
+const piUser = await verifyPiUser(req, res);
 
-if (!piAuth.ok) {
-  return res.status(401).json({
-    error: "Invalid access token"
-  });
-}
-
-const piUser = await piAuth.json();
-
-if (piUser.uid !== ownerUid) {
-  return res.status(403).json({
-    error: "User mismatch"
-  });
-}
+if (!piUser) return;
+    
     if (!title || !price || !cover || !pdf || !owner || !ownerUid) {
       return res.status(400).json({ error: "Missing data" });
     }
