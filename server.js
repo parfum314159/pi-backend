@@ -600,16 +600,33 @@ app.post("/add-comment", async (req, res) => {
     const piUser = await verifyPiUser(req, res);
     if (!piUser) return;
 
-    await db
-      .collection("books")
-      .doc(bookId)
-      .collection("comments")
-      .add({
-        userUid,
-        username: piUser.username,
-        text,
-        createdAt: Date.now()
-      });
+  // التحقق هل المستخدم علق سابقاً
+const commentRef = db
+  .collection("books")
+  .doc(bookId)
+  .collection("comments")
+  .doc(userUid);
+
+const existingComment = await commentRef.get();
+
+if (existingComment.exists) {
+  return res.status(400).json({
+    success: false,
+    error: "You already commented on this book"
+  });
+}
+
+// إنشاء التعليق
+await commentRef.set({
+  userUid,
+  username: piUser.username,
+  text,
+  createdAt: Date.now()
+});
+
+res.json({
+  success: true
+});
 
     res.json({ success: true });
 
