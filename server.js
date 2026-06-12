@@ -588,113 +588,61 @@ if (!piUser) return;
 
 /* ================= COMMENTS ================= */
 
+// إضافة تعليق
 app.post("/add-comment", async (req, res) => {
-
   try {
+    const { bookId, userUid, accessToken, text } = req.body;
 
-    const {
-      bookId,
-      comment,
-      userUid,
-      accessToken
-    } = req.body;
-
-    if (
-      !bookId ||
-      !comment ||
-      !userUid ||
-      !accessToken
-    ) {
-      return res.status(400).json({
-        error: "Missing data"
-      });
+    if (!bookId || !userUid || !accessToken || !text) {
+      return res.status(400).json({ error: "Missing data" });
     }
 
     const piUser = await verifyPiUser(req, res);
-
     if (!piUser) return;
 
-    const commentRef = db
-      .collection("comments")
+    await db
+      .collection("books")
       .doc(bookId)
-      .collection("users")
-      .doc(userUid);
-
-    const oldComment = await commentRef.get();
-
-    if (oldComment.exists) {
-      return res.status(400).json({
-        error: "You already commented"
+      .collection("comments")
+      .add({
+        userUid,
+        username: piUser.username,
+        text,
+        createdAt: Date.now()
       });
-    }
 
-    await commentRef.set({
-
-      username: piUser.username,
-
-      comment: comment.trim(),
-
-      createdAt: Date.now()
-
-    });
-
-    res.json({
-      success: true
-    });
+    res.json({ success: true });
 
   } catch (e) {
-
-    res.status(500).json({
-      error: e.message
-    });
-
+    res.status(500).json({ error: e.message });
   }
-
 });
 
 
 
-app.get("/book-comments", async (req, res) => {
-
+// جلب التعليقات
+app.get("/comments", async (req, res) => {
   try {
-
     const bookId = req.query.bookId;
 
     if (!bookId) {
-
-      return res.status(400).json({
-        error: "Missing bookId"
-      });
-
+      return res.status(400).json({ error: "Missing bookId" });
     }
 
     const snap = await db
-      .collection("comments")
+      .collection("books")
       .doc(bookId)
-      .collection("users")
+      .collection("comments")
       .orderBy("createdAt", "desc")
       .get();
 
-    const comments = snap.docs.map(doc => doc.data());
+    const comments = snap.docs.map(d => d.data());
 
-    res.json({
-
-      success: true,
-
-      comments
-
-    });
+    res.json({ success: true, comments });
 
   } catch (e) {
-
-    res.status(500).json({
-
-      error: e.message
-
-    });
-
+    res.status(500).json({ error: e.message });
   }
-
 });
 
 
