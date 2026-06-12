@@ -585,6 +585,119 @@ if (!piUser) return;
   }
 });
 
+
+/* ================= COMMENTS ================= */
+
+app.post("/add-comment", async (req, res) => {
+
+  try {
+
+    const {
+      bookId,
+      comment,
+      userUid,
+      accessToken
+    } = req.body;
+
+    if (
+      !bookId ||
+      !comment ||
+      !userUid ||
+      !accessToken
+    ) {
+      return res.status(400).json({
+        error: "Missing data"
+      });
+    }
+
+    const piUser = await verifyPiUser(req, res);
+
+    if (!piUser) return;
+
+    const commentRef = db
+      .collection("comments")
+      .doc(bookId)
+      .collection("users")
+      .doc(userUid);
+
+    const oldComment = await commentRef.get();
+
+    if (oldComment.exists) {
+      return res.status(400).json({
+        error: "You already commented"
+      });
+    }
+
+    await commentRef.set({
+
+      username: piUser.username,
+
+      comment: comment.trim(),
+
+      createdAt: Date.now()
+
+    });
+
+    res.json({
+      success: true
+    });
+
+  } catch (e) {
+
+    res.status(500).json({
+      error: e.message
+    });
+
+  }
+
+});
+
+
+
+app.get("/book-comments", async (req, res) => {
+
+  try {
+
+    const bookId = req.query.bookId;
+
+    if (!bookId) {
+
+      return res.status(400).json({
+        error: "Missing bookId"
+      });
+
+    }
+
+    const snap = await db
+      .collection("comments")
+      .doc(bookId)
+      .collection("users")
+      .orderBy("createdAt", "desc")
+      .get();
+
+    const comments = snap.docs.map(doc => doc.data());
+
+    res.json({
+
+      success: true,
+
+      comments
+
+    });
+
+  } catch (e) {
+
+    res.status(500).json({
+
+      error: e.message
+
+    });
+
+  }
+
+});
+
+
 /* ================= PAYMENTS ================= */
 
 
