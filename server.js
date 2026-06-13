@@ -150,6 +150,13 @@ if (!doc.data().approved) {
     error: "Book not found"
   });
 }
+
+    res.set({
+  "Cache-Control": "no-store, no-cache, must-revalidate, private",
+  "Pragma": "no-cache",
+  "Expires": "0"
+});
+    
     res.json({ success: true, book: { id: doc.id, ...doc.data() } });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -624,11 +631,9 @@ await commentRef.set({
   createdAt: Date.now()
 });
 
-res.json({
+return res.json({
   success: true
 });
-
-    res.json({ success: true });
 
   } catch (e) {
     res.status(500).json({ error: e.message });
