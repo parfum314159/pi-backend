@@ -1483,6 +1483,16 @@ app.get("/platform-stats", async (req,res) => {
 
     stats.reviewedBooks =
       reviewedBooks.size;
+
+
+    
+console.log("TEST PLATFORM STATS");
+console.log("approved =", approvedBooks.size);
+console.log("reviewed =", reviewedBooks.size);
+    
+
+
+    
 await db.doc("stats/platform").set({
   approvedBooks: approvedBooks.size,
   reviewedBooks: reviewedBooks.size
