@@ -1483,7 +1483,10 @@ app.get("/platform-stats", async (req,res) => {
 
     stats.reviewedBooks =
       reviewedBooks.size;
-
+await db.doc("stats/platform").set({
+  approvedBooks: approvedBooks.size,
+  reviewedBooks: reviewedBooks.size
+}, { merge: true });
     res.json({
       success: true,
       stats
