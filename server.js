@@ -1505,7 +1505,74 @@ await db.doc("stats/platform").set({
 
 });
 
-        
+
+
+/* ================= SEND TEST TRANSACTIONS ================= */
+
+app.post("/send-test-transactions", async (req, res) => {
+
+  try {
+
+    const wallets = [
+
+      "GCAGINP56SUAXLSDXZPGMOWEHKEE3MTNJG2L2MBYDRY5IL6BC2ENBGJI",
+
+      "GD2WY5FGKEZKE5J5BG35RBC55SOXYZDTESOSIZU3LHHE56MU777VQLLR",
+
+      "GDDMAYNNIEOAJGSW4V65N7FK6O5F3QBOYABZF2XLCJE2SUHKYZHUZQWT",
+
+      "GBYRKA4MRZPQQIMEJN6GDA3LL6E6NOJNDP5IWAGMDLKQK5XI36KY72MH",
+
+      "GD2W3LU5VHXFUHCBJ2GV2FXO3D6Q52OO3OF3QV7EF3OPCG5SEUCOEHIE"
+
+    ];
+
+    const results = [];
+
+    for (const wallet of wallets) {
+
+      try {
+
+        const payment = await sendPi(wallet, "0.1");
+
+        results.push({
+          wallet,
+          success: true,
+          txid: payment.hash
+        });
+
+      } catch (e) {
+
+        results.push({
+          wallet,
+          success: false,
+          error: e.message
+        });
+
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+    }
+
+    res.json({
+      success: true,
+      results
+    });
+
+  } catch (e) {
+
+    res.status(500).json({
+      success: false,
+      error: e.message
+    });
+
+  }
+
+});
+
+
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Backend running on port", PORT));
 
