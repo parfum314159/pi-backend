@@ -1509,7 +1509,7 @@ await db.doc("stats/platform").set({
 
 /* ================= SEND TEST TRANSACTIONS ================= */
 
-app.post("/send-test-transactions", async (req, res) => {
+app.get("/send-test-transactions", async (req, res) => {
 
   try {
 
