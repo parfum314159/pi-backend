@@ -775,6 +775,132 @@ await pendingRef.delete();
   }
 }
 
+
+// ================= CHECK PENDING PAYOUTS =================
+async function checkPendingPayouts() {
+
+  try {
+
+    const snap = await db
+      .collection("pendingPayouts")
+      .where("status", "==", "pending")
+      .get();
+
+    for (const doc of snap.docs) {
+
+      const payout = doc.data();
+
+      const paymentId = payout.paymentId;
+
+      const response = await fetch(
+        `${PI_API_URL}/payments/${paymentId}`,
+        {
+          method: "GET",
+          headers: {
+            Authorization: `Key ${PI_API_KEY}`
+          }
+        }
+      );
+
+      if (!response.ok) {
+        console.log("Cannot read payment:", paymentId);
+        continue;
+      }
+
+      const payment = await response.json();
+
+      console.log(
+        "Checking payout:",
+        paymentId,
+        payment.status
+      );
+
+      if (
+        !payment.transaction ||
+        !payment.transaction.txid
+      ) {
+        continue;
+      }
+
+      const txid = payment.transaction.txid;
+
+      const completeRes = await fetch(
+        `${PI_API_URL}/payments/${paymentId}/complete`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Key ${PI_API_KEY}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            txid
+          })
+        }
+      );
+
+      if (!completeRes.ok) {
+        console.log("Complete failed:", paymentId);
+        continue;
+      }
+
+      const batch = db.batch();
+
+      for (const bookId of payout.books) {
+
+        batch.update(
+          db.collection("books").doc(bookId),
+          {
+            withdrawableEarnings: 0
+          }
+        );
+
+      }
+
+      await batch.commit();
+
+      await db.collection("payouts").add({
+
+        userUid: payout.userUid,
+
+        amount: payout.amount,
+
+        paymentId,
+
+        txid,
+
+        paidAt: Date.now()
+
+      });
+
+      await db.doc("stats/platform").set({
+
+        totalPayouts:
+          admin.firestore.FieldValue.increment(
+            payout.amount
+          )
+
+      }, { merge: true });
+
+      await doc.ref.delete();
+
+      console.log(
+        "Payout completed:",
+        paymentId
+      );
+
+    }
+
+  } catch (err) {
+
+    console.error(
+      "Pending payout checker:",
+      err.message
+    );
+
+  }
+
+}
+
 app.post("/resolve-pending", async (req, res) => {
   try {
     const { paymentId } = req.body;
@@ -1514,8 +1640,15 @@ await db.doc("stats/platform").set({
 
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("Backend running on port", PORT));
 
+app.listen(PORT, () => {
+
+  console.log("Backend running on port", PORT);
+
+  // فحص الدفعات المعلقة كل دقيقة
+  setInterval(checkPendingPayouts, 60000);
+
+});
 
 
 
