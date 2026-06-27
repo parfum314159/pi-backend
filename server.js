@@ -1224,64 +1224,79 @@ app.post("/request-payout", async (req, res) => {
       return res.status(400).json({ error: "Minimum payout is 5 Pi" });
     }
 
-    // إرسال عبر Stellar SDK على Testnet
-    const sourceAccount = await server.loadAccount(
-      APP_KEYPAIR.publicKey()
-    );
-
-    const fee = await server.fetchBaseFee();
-
-    const tx = new StellarSdk.TransactionBuilder(
-      sourceAccount,
-      {
-        fee,
-        networkPassphrase: "Pi Testnet"
+    const createRes = await fetch(
+  `${PI_API_URL}/payments`,
+  {
+    method: "POST",
+    headers: {
+      Authorization: `Key ${PI_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      payment: {
+        uid: userUid,
+        amount,
+        memo: "Author payout",
+        metadata: {
+          type: "author_payout",
+          userUid
+        }
       }
-    )
-    .addMemo(StellarSdk.Memo.text("Spicy Library Payout"))
-    .addOperation(
-      StellarSdk.Operation.payment({
-        destination: walletAddress,
-        asset: StellarSdk.Asset.native(),
-        amount: amount.toString()
-      })
-    )
-    .setTimeout(60)
-    .build();
+    })
+  }
+);
 
-    tx.sign(APP_KEYPAIR);
+const createData = await createRes.json();
 
-    const result = await server.submitTransaction(tx);
+if (!createRes.ok) {
+  await lockRef.delete();
 
-    console.log("✅ Payout sent:", result.hash);
+  return res.status(500).json({
+    error:
+      createData.error_message ||
+      createData.error ||
+      "Unable to create payout"
+  });
+}
 
-    // تصفير الأرباح
-    const batch = db.batch();
-    for (const ref of booksToReset) {
-      batch.update(ref, { withdrawableEarnings: 0 });
+const paymentId = createData.identifier;
+    await fetch(
+  `${PI_API_URL}/payments/${paymentId}/approve`,
+  {
+    method: "POST",
+    headers: {
+      Authorization: `Key ${PI_API_KEY}`
     }
-    await batch.commit();
+  }
+);
+    // تصفير الأرباح
+    await db.collection("pendingPayouts")
+.doc(paymentId)
+.set({
 
-    // تسجيل السحب
-    await db.collection("payouts").add({
-      userUid,
-      walletAddress,
-      amount,
-      txid: result.hash,
-      paidAt: Date.now()
-    });
+  paymentId,
+  userUid,
+  amount,
 
-    await db.doc("stats/platform").set({
-      totalPayouts: admin.firestore.FieldValue.increment(amount)
-    }, { merge: true });
+  books: booksToReset.map(b => b.id),
 
-    await lockRef.delete();
+  createdAt: Date.now(),
 
-    res.json({
-      success: true,
-      txid: result.hash,
-      amount: amount.toFixed(2)
-    });
+  status: "pending"
+
+});
+
+   
+
+   await lockRef.delete();
+
+res.json({
+  success: true,
+  pending: true,
+  paymentId,
+  amount: amount.toFixed(2),
+  message: "Payout request submitted successfully."
+});
 
   } catch (err) {
     try {
@@ -1292,6 +1307,169 @@ app.post("/request-payout", async (req, res) => {
     console.error("Payout error:", err);
     res.status(500).json({ error: err.message || "Server error" });
   }
+});
+
+/* ================= CHECK PAYOUT ================= */
+
+app.get("/check-payout/:paymentId", async (req, res) => {
+
+  try {
+
+    const paymentId = req.params.paymentId;
+
+    const response = await fetch(
+      `${PI_API_URL}/payments/${paymentId}`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Key ${PI_API_KEY}`
+        }
+      }
+    );
+
+    const payment = await response.json();
+
+    if (!response.ok) {
+      return res.status(500).json({
+        error: payment.error || payment.error_message
+      });
+    }
+
+    console.log("Checking payout:", paymentId, payment.status);
+
+    // إذا ألغيت الدفعة
+    if (payment.status.cancelled || payment.status.user_cancelled) {
+
+      await db.collection("pendingPayouts")
+        .doc(paymentId)
+        .delete();
+
+      return res.json({
+        success: true,
+        status: "cancelled"
+      });
+
+    }
+
+    // إذا لم تكتمل بعد
+    if (!payment.status.transaction_verified) {
+
+      return res.json({
+        success: true,
+        status: "pending"
+      });
+
+    }
+
+    // يوجد txid
+    const txid = payment.transaction.txid;
+
+        // أكمل الدفعة عند Pi
+    const completeRes = await fetch(
+      `${PI_API_URL}/payments/${paymentId}/complete`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Key ${PI_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ txid })
+      }
+    );
+
+    const completeData = await completeRes.json();
+
+    if (!completeRes.ok) {
+      return res.status(500).json({
+        error:
+          completeData.error ||
+          completeData.error_message ||
+          "Complete failed"
+      });
+    }
+
+    // اجلب بيانات السحب
+    const pendingDoc = await db
+      .collection("pendingPayouts")
+      .doc(paymentId)
+      .get();
+
+    if (!pendingDoc.exists) {
+
+      return res.json({
+        success: true,
+        status: "completed",
+        txid
+      });
+
+    }
+
+    const payout = pendingDoc.data();
+
+    const batch = db.batch();
+
+    // تصفير الأرباح
+    for (const bookId of payout.books) {
+
+      batch.update(
+        db.collection("books").doc(bookId),
+        {
+          withdrawableEarnings: 0
+        }
+      );
+
+    }
+
+    await batch.commit();
+
+    // تسجيل السحب
+    await db.collection("payouts").add({
+
+      paymentId,
+
+      txid,
+
+      userUid: payout.userUid,
+
+      amount: payout.amount,
+
+      paidAt: Date.now()
+
+    });
+
+    // تحديث إحصائيات المنصة
+    await db.doc("stats/platform").set({
+
+      totalPayouts:
+        admin.firestore.FieldValue.increment(
+          payout.amount
+        )
+
+    }, { merge: true });
+
+    // حذف السحب المعلق
+    await pendingDoc.ref.delete();
+
+    return res.json({
+
+      success: true,
+
+      status: "completed",
+
+      txid
+
+    });
+
+  } catch (err) {
+
+    console.error(err);
+
+    res.status(500).json({
+      error: err.message
+    });
+
+  }
+
 });
 
 /* ================= START ================= */
