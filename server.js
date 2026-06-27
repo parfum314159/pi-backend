@@ -775,132 +775,6 @@ await pendingRef.delete();
   }
 }
 
-
-// ================= CHECK PENDING PAYOUTS =================
-async function checkPendingPayouts() {
-
-  try {
-
-    const snap = await db
-      .collection("pendingPayouts")
-      .where("status", "==", "pending")
-      .get();
-
-    for (const doc of snap.docs) {
-
-      const payout = doc.data();
-
-      const paymentId = payout.paymentId;
-
-      const response = await fetch(
-        `${PI_API_URL}/payments/${paymentId}`,
-        {
-          method: "GET",
-          headers: {
-            Authorization: `Key ${PI_API_KEY}`
-          }
-        }
-      );
-
-      if (!response.ok) {
-        console.log("Cannot read payment:", paymentId);
-        continue;
-      }
-
-      const payment = await response.json();
-
-      console.log(
-        "Checking payout:",
-        paymentId,
-        payment.status
-      );
-
-      if (
-        !payment.transaction ||
-        !payment.transaction.txid
-      ) {
-        continue;
-      }
-
-      const txid = payment.transaction.txid;
-
-      const completeRes = await fetch(
-        `${PI_API_URL}/payments/${paymentId}/complete`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Key ${PI_API_KEY}`,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            txid
-          })
-        }
-      );
-
-      if (!completeRes.ok) {
-        console.log("Complete failed:", paymentId);
-        continue;
-      }
-
-      const batch = db.batch();
-
-      for (const bookId of payout.books) {
-
-        batch.update(
-          db.collection("books").doc(bookId),
-          {
-            withdrawableEarnings: 0
-          }
-        );
-
-      }
-
-      await batch.commit();
-
-      await db.collection("payouts").add({
-
-        userUid: payout.userUid,
-
-        amount: payout.amount,
-
-        paymentId,
-
-        txid,
-
-        paidAt: Date.now()
-
-      });
-
-      await db.doc("stats/platform").set({
-
-        totalPayouts:
-          admin.firestore.FieldValue.increment(
-            payout.amount
-          )
-
-      }, { merge: true });
-
-      await doc.ref.delete();
-
-      console.log(
-        "Payout completed:",
-        paymentId
-      );
-
-    }
-
-  } catch (err) {
-
-    console.error(
-      "Pending payout checker:",
-      err.message
-    );
-
-  }
-
-}
-
 app.post("/resolve-pending", async (req, res) => {
   try {
     const { paymentId } = req.body;
@@ -1066,10 +940,7 @@ app.post("/save-wallet", async (req, res) => {
   try {
 
     const { userUid, walletAddress, accessToken } = req.body;
-console.log("========== SAVE WALLET ==========");
-console.log("userUid:", userUid);
-console.log("walletAddress:", walletAddress);
-console.log("accessToken exists:", !!accessToken);
+
     if (!accessToken) {
   return res.status(401).json({
     error: "Missing access token"
@@ -1079,10 +950,7 @@ console.log("accessToken exists:", !!accessToken);
 const piUser = await verifyPiUser(req, res);
 
 if (!piUser) return;
-    console.log("Pi user verified:", piUser.uid);
-console.log("===== SAVE WALLET =====");
-console.log(req.body);
-console.log(piUser);
+
     if (!userUid || !walletAddress) {
       return res.status(400).json({
         error: "Missing data"
@@ -1114,8 +982,7 @@ await userRef.set(
   { walletAddress },
   { merge:true }
 );
-    console.log("Wallet saved to Firebase");
-console.log("Wallet saved successfully");
+
     res.json({ success: true });
 
   } catch (e) {
@@ -1163,9 +1030,46 @@ if (!piUser) return;
 });
 
 
+async function sendPi(destination, amount) {
 
+  const sourceAccount =
+    await server.loadAccount(
+      APP_KEYPAIR.publicKey()
+    );
 
-/* ================= PAYOUT REQUEST ================= */
+  const fee =
+    await server.fetchBaseFee();
+
+  const tx =
+    new StellarSdk.TransactionBuilder(
+      sourceAccount,
+      {
+        fee,
+        networkPassphrase:
+          "Pi Testnet"
+      }
+    )
+
+    .addMemo(
+  StellarSdk.Memo.text("Withdrawal - Spicy Library")
+)
+      .addOperation(
+        StellarSdk.Operation.payment({
+          destination,
+          asset:
+            StellarSdk.Asset.native(),
+          amount: amount.toString()
+        })
+      )
+      .setTimeout(60)
+      .build();
+
+  tx.sign(APP_KEYPAIR);
+
+  return await server.submitTransaction(
+    tx
+  );
+}
 
 /* ================= PAYOUT REQUEST ================= */
 
@@ -1175,11 +1079,15 @@ app.post("/request-payout", async (req, res) => {
     const { userUid, accessToken } = req.body;
 
     if (!userUid || !accessToken) {
-      return res.status(400).json({ error: "Missing data" });
+      return res.status(400).json({
+        error: "Missing data"
+      });
     }
 
+    // التحقق من هوية المستخدم مع Pi
     const piUser = await verifyPiUser(req, res);
-    if (!piUser) return;
+
+if (!piUser) return;
 
     const userDoc = await db
       .collection("users")
@@ -1187,296 +1095,128 @@ app.post("/request-payout", async (req, res) => {
       .get();
 
     if (!userDoc.exists) {
-      return res.status(404).json({ error: "User not found" });
+      return res.status(404).json({
+        error: "User not found"
+      });
     }
 
-    const walletAddress = userDoc.data().walletAddress;
+    const walletAddress =
+      userDoc.data().walletAddress;
 
     if (!walletAddress) {
-      return res.status(400).json({ error: "Wallet not configured" });
+      return res.status(400).json({
+        error: "Wallet not configured"
+      });
     }
 
-    // PAYOUT LOCK
-    const lockRef = db.collection("payoutLocks").doc(userUid);
-    const lockDoc = await lockRef.get();
+    // ===== PAYOUT LOCK =====
 
-    if (lockDoc.exists) {
-      const createdAt = lockDoc.data().createdAt || 0;
-      if (Date.now() - createdAt < 180000) {
-        return res.status(400).json({ error: "Payout already processing" });
-      }
-      await lockRef.delete();
-    }
+const payoutLockRef = db
+  .collection("payoutLocks")
+  .doc(userUid);
 
-    await lockRef.set({ createdAt: Date.now() });
+const existingLock =
+  await payoutLockRef.get();
 
-    // حساب الأرباح
+if (existingLock.exists) {
+
+  const createdAt =
+    existingLock.data().createdAt || 0;
+
+  const isLocked =
+    Date.now() - createdAt < 3 * 60 * 1000;
+
+  if (isLocked) {
+    return res.status(400).json({
+      error: "Payout already processing"
+    });
+  }
+
+  await payoutLockRef.delete();
+}
+
+await payoutLockRef.set({
+  createdAt: Date.now()
+});
+
+// ===== END LOCK =====
+    
+    // ✅ تحقق محفظة Pi
+    
+
     const booksSnap = await db
       .collection("books")
       .where("ownerUid", "==", userUid)
       .get();
 
     let totalEarnings = 0;
-    const booksToReset = [];
 
-    booksSnap.forEach(doc => {
-      totalEarnings += Number(doc.data().withdrawableEarnings || 0);
-      booksToReset.push(doc.ref);
-    });
+const booksToReset = [];
 
-    const amount = Number(totalEarnings.toFixed(2));
+booksSnap.forEach(doc => {
+  const book = doc.data();
+totalEarnings +=
+  Number(book.withdrawableEarnings || 0);
 
-    if (amount < 5) {
-      await lockRef.delete();
+  booksToReset.push(doc.ref);
+});
+
+    if (totalEarnings < 5) {
       return res.status(400).json({ error: "Minimum payout is 5 Pi" });
     }
 
-    const createRes = await fetch(
-  `${PI_API_URL}/payments`,
-  {
-    method: "POST",
-    headers: {
-      Authorization: `Key ${PI_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      payment: {
-        uid: userUid,
-        amount,
-        memo: "Author payout",
-        metadata: {
-          type: "author_payout",
-          userUid
-        }
-      }
-    })
-  }
-);
+   const paymentResult =
+  await sendPi(
+    walletAddress,
+    totalEarnings.toFixed(2)
+  );
 
-const createData = await createRes.json();
+// تصفير المبيعات بعد نجاح التحويل فقط
+const batch = db.batch();
 
-if (!createRes.ok) {
-  await lockRef.delete();
-
-  return res.status(500).json({
-    error:
-      createData.error_message ||
-      createData.error ||
-      "Unable to create payout"
-  });
+for (const ref of booksToReset) {
+  batch.update(ref, {
+  withdrawableEarnings: 0
+});
 }
 
-const paymentId = createData.identifier;
-    await fetch(
-  `${PI_API_URL}/payments/${paymentId}/approve`,
-  {
-    method: "POST",
-    headers: {
-      Authorization: `Key ${PI_API_KEY}`
-    }
-  }
-);
-    // تصفير الأرباح
-    await db.collection("pendingPayouts")
-.doc(paymentId)
-.set({
+await batch.commit();
 
-  paymentId,
+await db.collection("payouts").add({
   userUid,
-  amount,
-
-  books: booksToReset.map(b => b.id),
-
-  createdAt: Date.now(),
-
-  status: "pending"
-
+  walletAddress,
+  amount: Number(
+    totalEarnings.toFixed(2)
+  ),
+  txid: paymentResult.hash,
+  paidAt: Date.now()
 });
 
-   
+    await db.doc("stats/platform").set({
+  totalPayouts:
+    admin.firestore.FieldValue.increment(
+      Number(totalEarnings.toFixed(2))
+    )
+}, { merge:true });
 
-   await lockRef.delete();
-
+await payoutLockRef.delete();
+    
 res.json({
   success: true,
-  pending: true,
-  paymentId,
-  amount: amount.toFixed(2),
-  message: "Payout request submitted successfully."
+  txid: paymentResult.hash,
+  amount: totalEarnings.toFixed(2)
 });
 
   } catch (err) {
     try {
-      await db.collection("payoutLocks")
-        .doc(req.body.userUid)
-        .delete();
-    } catch {}
+  await db
+    .collection("payoutLocks")
+    .doc(req.body.userUid)
+    .delete();
+} catch {}
     console.error("Payout error:", err);
-    res.status(500).json({ error: err.message || "Server error" });
+    res.status(500).json({ error: "Server error" });
   }
-});
-
-/* ================= CHECK PAYOUT ================= */
-
-app.get("/check-payout/:paymentId", async (req, res) => {
-
-  try {
-
-    const paymentId = req.params.paymentId;
-
-    const response = await fetch(
-      `${PI_API_URL}/payments/${paymentId}`,
-      {
-        method: "GET",
-        headers: {
-          Authorization: `Key ${PI_API_KEY}`
-        }
-      }
-    );
-
-    const payment = await response.json();
-
-    if (!response.ok) {
-      return res.status(500).json({
-        error: payment.error || payment.error_message
-      });
-    }
-
-    console.log("Checking payout:", paymentId, payment.status);
-
-    // إذا ألغيت الدفعة
-    if (payment.status.cancelled || payment.status.user_cancelled) {
-
-      await db.collection("pendingPayouts")
-        .doc(paymentId)
-        .delete();
-
-      return res.json({
-        success: true,
-        status: "cancelled"
-      });
-
-    }
-
-    // إذا لم تكتمل بعد
-    if (!payment.status.transaction_verified) {
-
-      return res.json({
-        success: true,
-        status: "pending"
-      });
-
-    }
-
-    // يوجد txid
-    const txid = payment.transaction.txid;
-
-        // أكمل الدفعة عند Pi
-    const completeRes = await fetch(
-      `${PI_API_URL}/payments/${paymentId}/complete`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Key ${PI_API_KEY}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ txid })
-      }
-    );
-
-    const completeData = await completeRes.json();
-
-    if (!completeRes.ok) {
-      return res.status(500).json({
-        error:
-          completeData.error ||
-          completeData.error_message ||
-          "Complete failed"
-      });
-    }
-
-    // اجلب بيانات السحب
-    const pendingDoc = await db
-      .collection("pendingPayouts")
-      .doc(paymentId)
-      .get();
-
-    if (!pendingDoc.exists) {
-
-      return res.json({
-        success: true,
-        status: "completed",
-        txid
-      });
-
-    }
-
-    const payout = pendingDoc.data();
-
-    const batch = db.batch();
-
-    // تصفير الأرباح
-    for (const bookId of payout.books) {
-
-      batch.update(
-        db.collection("books").doc(bookId),
-        {
-          withdrawableEarnings: 0
-        }
-      );
-
-    }
-
-    await batch.commit();
-
-    // تسجيل السحب
-    await db.collection("payouts").add({
-
-      paymentId,
-
-      txid,
-
-      userUid: payout.userUid,
-
-      amount: payout.amount,
-
-      paidAt: Date.now()
-
-    });
-
-    // تحديث إحصائيات المنصة
-    await db.doc("stats/platform").set({
-
-      totalPayouts:
-        admin.firestore.FieldValue.increment(
-          payout.amount
-        )
-
-    }, { merge: true });
-
-    // حذف السحب المعلق
-    await pendingDoc.ref.delete();
-
-    return res.json({
-
-      success: true,
-
-      status: "completed",
-
-      txid
-
-    });
-
-  } catch (err) {
-
-    console.error(err);
-
-    res.status(500).json({
-      error: err.message
-    });
-
-  }
-
 });
 
 /* ================= START ================= */
@@ -1766,135 +1506,75 @@ await db.doc("stats/platform").set({
 });
 
 
-/* ================= FORCE COMPLETE PAYOUT (ADMIN ONLY) ================= */
-app.get("/admin-complete-payout", async (req, res) => {
 
-  const paymentId = "zpGxwgNNRXFbAy2Chr0qA63lsLaq";
+/* ================= SEND TEST TRANSACTIONS ================= */
+
+app.get("/send-test-transactions", async (req, res) => {
 
   try {
 
-    // اجلب حالة الدفعة
-    const checkRes = await fetch(
-      `${PI_API_URL}/payments/${paymentId}`,
-      {
-        headers: {
-          Authorization: `Key ${PI_API_KEY}`
-        }
-      }
-    );
+    const wallets = [
 
-    const payment = await checkRes.json();
+      "GCAGINP56SUAXLSDXZPGMOWEHKEE3MTNJG2L2MBYDRY5IL6BC2ENBGJI",
 
-    console.log("Payment status:", payment.status);
-    console.log("Transaction:", payment.transaction);
+      "GD2WY5FGKEZKE5J5BG35RBC55SOXYZDTESOSIZU3LHHE56MU777VQLLR",
 
-    // إذا لا يوجد txid بعد
-    if (!payment.transaction?.txid) {
-      return res.json({
-        success: false,
-        message: "No txid yet - payment not processed by Pi Network",
-        status: payment.status
-      });
-    }
+      "GDDMAYNNIEOAJGSW4V65N7FK6O5F3QBOYABZF2XLCJE2SUHKYZHUZQWT",
 
-    const txid = payment.transaction.txid;
+      "GBYRKA4MRZPQQIMEJN6GDA3LL6E6NOJNDP5IWAGMDLKQK5XI36KY72MH",
 
-    // أكمل الدفعة
-    const completeRes = await fetch(
-      `${PI_API_URL}/payments/${paymentId}/complete`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Key ${PI_API_KEY}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ txid })
-      }
-    );
+      "GD2W3LU5VHXFUHCBJ2GV2FXO3D6Q52OO3OF3QV7EF3OPCG5SEUCOEHIE"
 
-    const completeData = await completeRes.json();
-    console.log("Complete result:", completeData);
+    ];
 
-    // تصفير الأرباح
-    const pendingDoc = await db
-      .collection("pendingPayouts")
-      .doc(paymentId)
-      .get();
+    const results = [];
 
-    if (pendingDoc.exists) {
+    for (const wallet of wallets) {
 
-      const payout = pendingDoc.data();
+      try {
 
-      const batch = db.batch();
+        const payment = await sendPi(wallet, "0.1");
 
-      for (const bookId of payout.books) {
-        batch.update(
-          db.collection("books").doc(bookId),
-          { withdrawableEarnings: 0 }
-        );
+        results.push({
+          wallet,
+          success: true,
+          txid: payment.hash
+        });
+
+      } catch (e) {
+
+        results.push({
+          wallet,
+          success: false,
+          error: e.message
+        });
+
       }
 
-      await batch.commit();
-
-      await db.collection("payouts").add({
-        userUid: payout.userUid,
-        amount: payout.amount,
-        paymentId,
-        txid,
-        paidAt: Date.now()
-      });
-
-      await pendingDoc.ref.delete();
+      await new Promise(resolve => setTimeout(resolve, 2000));
 
     }
 
     res.json({
       success: true,
-      txid,
-      message: "Payout completed successfully!"
+      results
     });
 
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
-  }
-
-});
-
-app.get("/cancel-pending-payout", async (req, res) => {
-  const paymentId = "TO7cji8MMZpdhXTqzPLmHKR97Peb";
-  try {
-    const r = await fetch(
-      `${PI_API_URL}/payments/${paymentId}/cancel`,
-      {
-        method: "POST",
-        headers: { Authorization: `Key ${PI_API_KEY}` }
-      }
-    );
-    const data = await r.json();
-    console.log("Cancel result:", data);
-
-    // احذف من pendingPayouts
-    await db.collection("pendingPayouts")
-      .doc(paymentId)
-      .delete();
-
-    res.json({ success: true, data });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+
+    res.status(500).json({
+      success: false,
+      error: e.message
+    });
+
   }
+
 });
+
+
 
 const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, () => {
-
-  console.log("Backend running on port", PORT);
-
-  // فحص الدفعات المعلقة كل دقيقة
-  setInterval(checkPendingPayouts, 60000);
-
-});
+app.listen(PORT, () => console.log("Backend running on port", PORT));
 
 
 
