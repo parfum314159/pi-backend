@@ -1076,7 +1076,9 @@ app.post("/save-wallet", async (req, res) => {
 const piUser = await verifyPiUser(req, res);
 
 if (!piUser) return;
-
+console.log("===== SAVE WALLET =====");
+console.log(req.body);
+console.log(piUser);
     if (!userUid || !walletAddress) {
       return res.status(400).json({
         error: "Missing data"
@@ -1108,7 +1110,7 @@ await userRef.set(
   { walletAddress },
   { merge:true }
 );
-
+console.log("Wallet saved successfully");
     res.json({ success: true });
 
   } catch (e) {
