@@ -1095,7 +1095,7 @@ app.post("/request-payout", async (req, res) => {
 
     const amount = Number(totalEarnings.toFixed(2));
 
-    // ===== الخطوة 1: إنشاء دفعة A2U =====
+    // ===== الخطوة 1: إنشاء أو استكمال دفعة A2U =====
     const createRes = await fetch(
       `${PI_API_URL}/payments`,
       {
@@ -1108,44 +1108,46 @@ app.post("/request-payout", async (req, res) => {
           payment: {
             amount: amount,
             memo: "Spicy Library - Author Payout",
-            metadata: {
-              type: "author_payout",
-              userUid: userUid
-            },
-            uid: userUid  // ← Pi UID للمستخدم المستلم
+            metadata: { type: "author_payout", userUid },
+            uid: userUid
           }
         })
       }
     );
 
+    const createData = await createRes.json();
+    let paymentId;
+
     if (!createRes.ok) {
-      const errText = await createRes.text();
-      console.error("Create payment error:", errText);
-      await payoutLockRef.delete();
-      return res.status(500).json({ error: "Failed to create payment: " + errText });
+
+      // يوجد دفعة معلقة → استخدمها
+      if (createData.error === "ongoing_payment_found") {
+        paymentId = createData.payment.identifier;
+        console.log("⚠️ Using existing pending payment:", paymentId);
+      } else {
+        await payoutLockRef.delete();
+        return res.status(500).json({
+          error: createData.error_message || "Failed to create payment"
+        });
+      }
+
+    } else {
+      paymentId = createData.identifier;
+      console.log("✅ New payment created:", paymentId);
     }
 
-    const payment = await createRes.json();
-    const paymentId = payment.identifier;
-
-    console.log("Payment created:", paymentId);
-
-    // ===== الخطوة 2: انتظر حتى يصبح لها txid =====
+    // ===== الخطوة 2: انتظر txid =====
     let txid = null;
     let attempts = 0;
-    const maxAttempts = 20; // انتظر حتى 40 ثانية
 
-    while (!txid && attempts < maxAttempts) {
+    while (!txid && attempts < 30) {
 
-      await new Promise(r => setTimeout(r, 2000)); // انتظر ثانيتين
+      await new Promise(r => setTimeout(r, 3000));
 
       const checkRes = await fetch(
         `${PI_API_URL}/payments/${paymentId}`,
         {
-          method: "GET",
-          headers: {
-            Authorization: `Key ${PI_API_KEY}`
-          }
+          headers: { Authorization: `Key ${PI_API_KEY}` }
         }
       );
 
@@ -1154,16 +1156,31 @@ app.post("/request-payout", async (req, res) => {
 
       if (checkData.transaction?.txid) {
         txid = checkData.transaction.txid;
+        console.log("✅ Got txid:", txid);
+      }
+
+      // إذا ألغيت
+      if (checkData.status?.cancelled || checkData.status?.user_cancelled) {
+        await payoutLockRef.delete();
+        return res.status(400).json({ error: "Payment was cancelled" });
       }
 
       attempts++;
     }
 
+    // إذا لم يأتِ txid → ألغِ وأعد المحاولة لاحقاً
     if (!txid) {
+      try {
+        await fetch(`${PI_API_URL}/payments/${paymentId}/cancel`, {
+          method: "POST",
+          headers: { Authorization: `Key ${PI_API_KEY}` }
+        });
+        console.log("Payment cancelled due to timeout");
+      } catch {}
+
       await payoutLockRef.delete();
       return res.status(500).json({
-        error: "Payment timeout - txid not received",
-        paymentId: paymentId
+        error: "Payment timeout - please try again in a few minutes"
       });
     }
 
@@ -1182,9 +1199,8 @@ app.post("/request-payout", async (req, res) => {
 
     if (!completeRes.ok) {
       const errText = await completeRes.text();
-      console.error("Complete payment error:", errText);
       await payoutLockRef.delete();
-      return res.status(500).json({ error: "Failed to complete payment: " + errText });
+      return res.status(500).json({ error: "Complete failed: " + errText });
     }
 
     // ===== تصفير الأرباح =====
@@ -1217,7 +1233,9 @@ app.post("/request-payout", async (req, res) => {
 
   } catch (err) {
     try {
-      await db.collection("payoutLocks").doc(req.body.userUid).delete();
+      await db.collection("payoutLocks")
+        .doc(req.body.userUid)
+        .delete();
     } catch {}
     console.error("Payout error:", err);
     res.status(500).json({ error: err.message || "Server error" });
