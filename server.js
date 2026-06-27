@@ -1258,19 +1258,16 @@ res.json({
 });
 
  } catch (err) {
-  try {
-    await db
-      .collection("payoutLocks")
-      .doc(req.body.userUid)
-      .delete();
-  } catch {}
-
-  console.error("Payout error:", err);
-
-  res.status(500).json({
-    error: err.message
-  });
-}
+    try {
+  await db
+    .collection("payoutLocks")
+    .doc(req.body.userUid)
+    .delete();
+} catch {}
+    console.error("Payout error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 /* ================= START ================= */
 // حفظ الدفع كـ pending عند approve
