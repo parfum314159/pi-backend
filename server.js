@@ -1196,6 +1196,10 @@ if (!txid) {
   throw new Error("Transaction not found");
 }
 
+    
+    console.log("TXID =", txid);
+    
+    
     const completeResponse =
   await fetch(
     `${PI_API_URL}/payments/${paymentId}/complete`,
@@ -1211,6 +1215,8 @@ if (!txid) {
     }
   );
 
+    console.log(await completeResponse.text());
+    
 if (!completeResponse.ok) {
   throw new Error(await completeResponse.text());
 }
