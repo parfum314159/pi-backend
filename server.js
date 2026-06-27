@@ -1030,46 +1030,7 @@ if (!piUser) return;
 });
 
 
-async function sendPi(destination, amount) {
 
-  const sourceAccount =
-    await server.loadAccount(
-      APP_KEYPAIR.publicKey()
-    );
-
-  const fee =
-    await server.fetchBaseFee();
-
-  const tx =
-    new StellarSdk.TransactionBuilder(
-      sourceAccount,
-      {
-        fee,
-        networkPassphrase:
-          "Pi Testnet"
-      }
-    )
-
-    .addMemo(
-  StellarSdk.Memo.text("Withdrawal - Spicy Library")
-)
-      .addOperation(
-        StellarSdk.Operation.payment({
-          destination,
-          asset:
-            StellarSdk.Asset.native(),
-          amount: amount.toString()
-        })
-      )
-      .setTimeout(60)
-      .build();
-
-  tx.sign(APP_KEYPAIR);
-
-  return await server.submitTransaction(
-    tx
-  );
-}
 
 /* ================= PAYOUT REQUEST ================= */
 
@@ -1193,8 +1154,10 @@ if (!paymentResponse.ok) {
 const paymentResult =
   await paymentResponse.json();
 
-    await fetch(
-  `${PI_API_URL}/payments/${paymentResult.identifier}/approve`,
+    const paymentId = paymentResult.identifier;
+
+   await fetch(
+  `${PI_API_URL}/payments/${paymentId}/approve`,
   {
     method: "POST",
     headers: {
@@ -1203,19 +1166,54 @@ const paymentResult =
   }
 );
 
-    await fetch(
-  `${PI_API_URL}/payments/${paymentResult.identifier}/complete`,
-  {
-    method: "POST",
-    headers: {
-      Authorization: `Key ${PI_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      txid: paymentResult.transaction.txid
-    })
+    let txid = null;
+
+for (let i = 0; i < 20; i++) {
+
+  await new Promise(r => setTimeout(r, 2000));
+
+  const paymentInfo = await fetch(
+    `${PI_API_URL}/payments/${paymentId}`,
+    {
+      headers: {
+        Authorization: `Key ${PI_API_KEY}`
+      }
+    }
+  );
+
+  const payment = await paymentInfo.json();
+
+  if (payment.transaction?.txid) {
+
+    txid = payment.transaction.txid;
+
+    break;
   }
-);
+
+}
+
+if (!txid) {
+  throw new Error("Transaction not found");
+}
+
+    const completeResponse =
+  await fetch(
+    `${PI_API_URL}/payments/${paymentId}/complete`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Key ${PI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        txid
+      })
+    }
+  );
+
+if (!completeResponse.ok) {
+  throw new Error(await completeResponse.text());
+}
 
 // تصفير المبيعات بعد نجاح التحويل فقط
 const batch = db.batch();
@@ -1234,7 +1232,7 @@ await db.collection("payouts").add({
   amount: Number(
     totalEarnings.toFixed(2)
   ),
-  txid: paymentResult.transaction.txid,
+  txid: txid,
   paidAt: Date.now()
 });
 
@@ -1249,7 +1247,7 @@ await payoutLockRef.delete();
     
 res.json({
   success: true,
-  txid: paymentResult.transaction.txid,
+  txid: txid,
   amount: totalEarnings.toFixed(2)
 });
 
