@@ -1730,7 +1730,29 @@ app.get("/admin-complete-payout", async (req, res) => {
 
 });
 
+app.get("/cancel-pending-payout", async (req, res) => {
+  const paymentId = "zpGxwgNNRXFbAy2Chr0qA63lsLaq";
+  try {
+    const r = await fetch(
+      `${PI_API_URL}/payments/${paymentId}/cancel`,
+      {
+        method: "POST",
+        headers: { Authorization: `Key ${PI_API_KEY}` }
+      }
+    );
+    const data = await r.json();
+    console.log("Cancel result:", data);
 
+    // احذف من pendingPayouts
+    await db.collection("pendingPayouts")
+      .doc(paymentId)
+      .delete();
+
+    res.json({ success: true, data });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 const PORT = process.env.PORT || 3000;
 
