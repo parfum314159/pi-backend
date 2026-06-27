@@ -1040,62 +1040,80 @@ app.post("/request-payout", async (req, res) => {
     const { userUid, accessToken } = req.body;
 
     if (!userUid || !accessToken) {
-      return res.status(400).json({ error: "Missing data" });
+      return res.status(400).json({
+        error: "Missing data"
+      });
     }
 
     const piUser = await verifyPiUser(req, res);
     if (!piUser) return;
 
-    // ===== تحقق من المستخدم =====
-    const userDoc = await db
-      .collection("users")
-      .doc(userUid)
-      .get();
+    // التحقق من المستخدم
+    const userDoc = await db.collection("users").doc(userUid).get();
 
     if (!userDoc.exists) {
-      return res.status(404).json({ error: "User not found" });
+      return res.status(404).json({
+        error: "User not found"
+      });
     }
 
-    // ===== PAYOUT LOCK =====
-    const payoutLockRef = db
-      .collection("payoutLocks")
-      .doc(userUid);
+    // منع أكثر من طلب في نفس الوقت
+    const lockRef = db.collection("payoutLocks").doc(userUid);
 
-    const existingLock = await payoutLockRef.get();
+    const lockDoc = await lockRef.get();
 
-    if (existingLock.exists) {
-      const createdAt = existingLock.data().createdAt || 0;
-      const isLocked = Date.now() - createdAt < 3 * 60 * 1000;
-      if (isLocked) {
-        return res.status(400).json({ error: "Payout already processing" });
+    if (lockDoc.exists) {
+
+      const createdAt = lockDoc.data().createdAt || 0;
+
+      if (Date.now() - createdAt < 180000) {
+
+        return res.status(400).json({
+          error: "Payout already processing"
+        });
+
       }
-      await payoutLockRef.delete();
+
+      await lockRef.delete();
+
     }
 
-    await payoutLockRef.set({ createdAt: Date.now() });
+    await lockRef.set({
+      createdAt: Date.now()
+    });
 
-    // ===== احسب الأرباح =====
-    const booksSnap = await db
+    // حساب الأرباح
+    const books = await db
       .collection("books")
       .where("ownerUid", "==", userUid)
       .get();
 
-    let totalEarnings = 0;
+    let amount = 0;
     const booksToReset = [];
 
-    booksSnap.forEach(doc => {
-      totalEarnings += Number(doc.data().withdrawableEarnings || 0);
+    books.forEach(doc => {
+
+      amount += Number(
+        doc.data().withdrawableEarnings || 0
+      );
+
       booksToReset.push(doc.ref);
+
     });
 
-    if (totalEarnings < 5) {
-      await payoutLockRef.delete();
-      return res.status(400).json({ error: "Minimum payout is 5 Pi" });
+    amount = Number(amount.toFixed(2));
+
+    if (amount < 5) {
+
+      await lockRef.delete();
+
+      return res.status(400).json({
+        error: "Minimum payout is 5 Pi"
+      });
+
     }
 
-    const amount = Number(totalEarnings.toFixed(2));
-
-    // ===== الخطوة 1: إنشاء أو استكمال دفعة A2U =====
+    // إنشاء دفعة A2U
     const createRes = await fetch(
       `${PI_API_URL}/payments`,
       {
@@ -1106,9 +1124,12 @@ app.post("/request-payout", async (req, res) => {
         },
         body: JSON.stringify({
           payment: {
-            amount: amount,
-            memo: "Spicy Library - Author Payout",
-            metadata: { type: "author_payout", userUid },
+            amount,
+            memo: "Author payout",
+            metadata: {
+              type: "author_payout",
+              userUid
+            },
             uid: userUid
           }
         })
@@ -1116,138 +1137,73 @@ app.post("/request-payout", async (req, res) => {
     );
 
     const createData = await createRes.json();
-    let paymentId;
 
     if (!createRes.ok) {
 
-      // يوجد دفعة معلقة → استخدمها
-      if (createData.error === "ongoing_payment_found") {
-        paymentId = createData.payment.identifier;
-        console.log("⚠️ Using existing pending payment:", paymentId);
-      } else {
-        await payoutLockRef.delete();
-        return res.status(500).json({
-          error: createData.error_message || "Failed to create payment"
-        });
-      }
+      await lockRef.delete();
 
-    } else {
-      paymentId = createData.identifier;
-      console.log("✅ New payment created:", paymentId);
+      return res.status(500).json({
+        error:
+          createData.error_message ||
+          createData.error ||
+          "Unable to create payout"
+      });
+
     }
 
-    // ===== الخطوة 2: انتظر txid =====
-    let txid = null;
-    let attempts = 0;
+    const paymentId = createData.identifier;
 
-    while (!txid && attempts < 30) {
+    // على Testnet لا نحاول انتظار txid
+    await db.collection("pendingPayouts")
+      .doc(paymentId)
+      .set({
 
-      await new Promise(r => setTimeout(r, 3000));
+        paymentId,
+        userUid,
+        amount,
+        books: booksToReset.map(r => r.id),
 
-      const checkRes = await fetch(
-        `${PI_API_URL}/payments/${paymentId}`,
-        {
-          headers: { Authorization: `Key ${PI_API_KEY}` }
-        }
-      );
+        createdAt: Date.now(),
 
-      const checkData = await checkRes.json();
-      console.log(`Attempt ${attempts + 1}:`, checkData.status);
+        status: "pending"
 
-      if (checkData.transaction?.txid) {
-        txid = checkData.transaction.txid;
-        console.log("✅ Got txid:", txid);
-      }
+      });
 
-      // إذا ألغيت
-      if (checkData.status?.cancelled || checkData.status?.user_cancelled) {
-        await payoutLockRef.delete();
-        return res.status(400).json({ error: "Payment was cancelled" });
-      }
+    await lockRef.delete();
 
-      attempts++;
-    }
+    return res.json({
 
-   // على Testnet: txid لا يأتي تلقائياً
-// نحفظ paymentId ونخبر المؤلف أن طلبه قيد المعالجة
-if (!txid) {
-
-  // احفظ الدفعة المعلقة في Firestore للمتابعة لاحقاً
-  await db.collection("pendingPayouts").doc(userUid).set({
-    paymentId,
-    amount,
-    userUid,
-    createdAt: Date.now(),
-    status: "pending_admin"
-  });
-
-  await payoutLockRef.delete();
-
-  // أرجع نجاح مع رسالة توضيحية
-  return res.json({
-    success: true,
-    txid: paymentId, // نستخدم paymentId مؤقتاً
-    amount: amount.toFixed(2),
-    pending: true,
-    message: "Payout request submitted - processing in progress"
-  });
-}
-    // ===== الخطوة 3: أكمل الدفعة =====
-    const completeRes = await fetch(
-      `${PI_API_URL}/payments/${paymentId}/complete`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Key ${PI_API_KEY}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ txid })
-      }
-    );
-
-    if (!completeRes.ok) {
-      const errText = await completeRes.text();
-      await payoutLockRef.delete();
-      return res.status(500).json({ error: "Complete failed: " + errText });
-    }
-
-    // ===== تصفير الأرباح =====
-    const batch = db.batch();
-    for (const ref of booksToReset) {
-      batch.update(ref, { withdrawableEarnings: 0 });
-    }
-    await batch.commit();
-
-    // ===== تسجيل السحب =====
-    await db.collection("payouts").add({
-      userUid,
-      amount,
-      paymentId,
-      txid,
-      paidAt: Date.now()
-    });
-
-    await db.doc("stats/platform").set({
-      totalPayouts: admin.firestore.FieldValue.increment(amount)
-    }, { merge: true });
-
-    await payoutLockRef.delete();
-
-    res.json({
       success: true,
-      txid,
-      amount: amount.toFixed(2)
+
+      pending: true,
+
+      paymentId,
+
+      amount: amount.toFixed(2),
+
+      message:
+        "Payout request submitted successfully."
+
     });
 
   } catch (err) {
+
     try {
+
       await db.collection("payoutLocks")
         .doc(req.body.userUid)
         .delete();
+
     } catch {}
-    console.error("Payout error:", err);
-    res.status(500).json({ error: err.message || "Server error" });
+
+    console.error(err);
+
+    res.status(500).json({
+      error: err.message
+    });
+
   }
+
 });
 
 /* ================= START ================= */
@@ -1538,69 +1494,6 @@ await db.doc("stats/platform").set({
 
 
 
-/* ================= SEND TEST TRANSACTIONS ================= */
-
-app.get("/send-test-transactions", async (req, res) => {
-
-  try {
-
-    const wallets = [
-
-      "GCAGINP56SUAXLSDXZPGMOWEHKEE3MTNJG2L2MBYDRY5IL6BC2ENBGJI",
-
-      "GD2WY5FGKEZKE5J5BG35RBC55SOXYZDTESOSIZU3LHHE56MU777VQLLR",
-
-      "GDDMAYNNIEOAJGSW4V65N7FK6O5F3QBOYABZF2XLCJE2SUHKYZHUZQWT",
-
-      "GBYRKA4MRZPQQIMEJN6GDA3LL6E6NOJNDP5IWAGMDLKQK5XI36KY72MH",
-
-      "GD2W3LU5VHXFUHCBJ2GV2FXO3D6Q52OO3OF3QV7EF3OPCG5SEUCOEHIE"
-
-    ];
-
-    const results = [];
-
-    for (const wallet of wallets) {
-
-      try {
-
-        const payment = await sendPi(wallet, "0.1");
-
-        results.push({
-          wallet,
-          success: true,
-          txid: payment.hash
-        });
-
-      } catch (e) {
-
-        results.push({
-          wallet,
-          success: false,
-          error: e.message
-        });
-
-      }
-
-      await new Promise(resolve => setTimeout(resolve, 2000));
-
-    }
-
-    res.json({
-      success: true,
-      results
-    });
-
-  } catch (e) {
-
-    res.status(500).json({
-      success: false,
-      error: e.message
-    });
-
-  }
-
-});
 
 
 
