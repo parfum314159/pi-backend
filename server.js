@@ -1635,7 +1635,100 @@ await db.doc("stats/platform").set({
 });
 
 
+/* ================= FORCE COMPLETE PAYOUT (ADMIN ONLY) ================= */
+app.get("/admin-complete-payout", async (req, res) => {
 
+  const paymentId = "zpGxwgNNRXFbAy2Chr0qA63lsLaq";
+
+  try {
+
+    // اجلب حالة الدفعة
+    const checkRes = await fetch(
+      `${PI_API_URL}/payments/${paymentId}`,
+      {
+        headers: {
+          Authorization: `Key ${PI_API_KEY}`
+        }
+      }
+    );
+
+    const payment = await checkRes.json();
+
+    console.log("Payment status:", payment.status);
+    console.log("Transaction:", payment.transaction);
+
+    // إذا لا يوجد txid بعد
+    if (!payment.transaction?.txid) {
+      return res.json({
+        success: false,
+        message: "No txid yet - payment not processed by Pi Network",
+        status: payment.status
+      });
+    }
+
+    const txid = payment.transaction.txid;
+
+    // أكمل الدفعة
+    const completeRes = await fetch(
+      `${PI_API_URL}/payments/${paymentId}/complete`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Key ${PI_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ txid })
+      }
+    );
+
+    const completeData = await completeRes.json();
+    console.log("Complete result:", completeData);
+
+    // تصفير الأرباح
+    const pendingDoc = await db
+      .collection("pendingPayouts")
+      .doc(paymentId)
+      .get();
+
+    if (pendingDoc.exists) {
+
+      const payout = pendingDoc.data();
+
+      const batch = db.batch();
+
+      for (const bookId of payout.books) {
+        batch.update(
+          db.collection("books").doc(bookId),
+          { withdrawableEarnings: 0 }
+        );
+      }
+
+      await batch.commit();
+
+      await db.collection("payouts").add({
+        userUid: payout.userUid,
+        amount: payout.amount,
+        paymentId,
+        txid,
+        paidAt: Date.now()
+      });
+
+      await pendingDoc.ref.delete();
+
+    }
+
+    res.json({
+      success: true,
+      txid,
+      message: "Payout completed successfully!"
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+
+});
 
 
 
