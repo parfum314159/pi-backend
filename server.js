@@ -1165,11 +1165,57 @@ totalEarnings +=
       return res.status(400).json({ error: "Minimum payout is 5 Pi" });
     }
 
-   const paymentResult =
-  await sendPi(
-    walletAddress,
-    totalEarnings.toFixed(2)
-  );
+   const paymentResponse = await fetch(
+  `${PI_API_URL}/payments`,
+  {
+    method: "POST",
+    headers: {
+      Authorization: `Key ${PI_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      payment: {
+        amount: Number(totalEarnings.toFixed(2)),
+        memo: "Author payout",
+        metadata: {
+          type: "author_payout"
+        },
+        uid: userUid
+      }
+    })
+  }
+);
+
+if (!paymentResponse.ok) {
+  throw new Error(await paymentResponse.text());
+}
+
+const paymentResult =
+  await paymentResponse.json();
+
+    await fetch(
+  `${PI_API_URL}/payments/${paymentResult.identifier}/approve`,
+  {
+    method: "POST",
+    headers: {
+      Authorization: `Key ${PI_API_KEY}`
+    }
+  }
+);
+
+    await fetch(
+  `${PI_API_URL}/payments/${paymentResult.identifier}/complete`,
+  {
+    method: "POST",
+    headers: {
+      Authorization: `Key ${PI_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      txid: paymentResult.transaction.txid
+    })
+  }
+);
 
 // تصفير المبيعات بعد نجاح التحويل فقط
 const batch = db.batch();
@@ -1188,7 +1234,7 @@ await db.collection("payouts").add({
   amount: Number(
     totalEarnings.toFixed(2)
   ),
-  txid: paymentResult.hash,
+  txid: paymentResult.transaction.txid,
   paidAt: Date.now()
 });
 
@@ -1203,7 +1249,7 @@ await payoutLockRef.delete();
     
 res.json({
   success: true,
-  txid: paymentResult.hash,
+  txid: paymentResult.transaction.txid,
   amount: totalEarnings.toFixed(2)
 });
 
