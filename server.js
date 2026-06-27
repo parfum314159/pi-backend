@@ -1138,20 +1138,36 @@ app.post("/request-payout", async (req, res) => {
 
     const createData = await createRes.json();
 
-    if (!createRes.ok) {
+console.log(createData);
 
-      await lockRef.delete();
+   let paymentId;
 
-      return res.status(500).json({
-        error:
-          createData.error_message ||
-          createData.error ||
-          "Unable to create payout"
-      });
+if (!createRes.ok) {
 
-    }
+  if (createData.error === "ongoing_payment_found") {
 
-    const paymentId = createData.identifier;
+    paymentId = createData.payment.identifier;
+
+    console.log("Using existing payment:", paymentId);
+
+  } else {
+
+    await lockRef.delete();
+
+    return res.status(500).json({
+      error:
+        createData.error_message ||
+        createData.error ||
+        "Unable to create payout"
+    });
+
+  }
+
+} else {
+
+  paymentId = createData.identifier;
+
+}
 
     // على Testnet لا نحاول انتظار txid
     await db.collection("pendingPayouts")
