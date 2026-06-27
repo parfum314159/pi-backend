@@ -621,6 +621,14 @@ app.post("/init-payout", async (req, res) => {
 
     await payoutLockRef.set({ createdAt: Date.now() });
 
+    // تنظيف أي دفعات سحب معلقة قديمة لنفس المستخدم
+    const stalePending = await db.collection("pendingPayouts")
+      .where("userUid", "==", userUid)
+      .get();
+    const cleanBatch = db.batch();
+    stalePending.forEach(doc => cleanBatch.delete(doc.ref));
+    if (!stalePending.empty) await cleanBatch.commit();
+
     // حساب المبلغ الإجمالي
     const booksSnap = await db.collection("books").where("ownerUid", "==", userUid).get();
 
@@ -785,6 +793,91 @@ app.post("/complete-payout", async (req, res) => {
 
   } catch (err) {
     console.error("Complete payout error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ================= RESOLVE INCOMPLETE PAYOUT (A2U معلقة) ================= */
+/*
+ * يُستدعى من onIncompletePaymentFound في الواجهة عندما تكون الدفعة المعلقة
+ * من نوع "payout" وليس شراء — يكمل التحويل ويصفّر الأرباح
+ */
+app.post("/resolve-incomplete-payout", async (req, res) => {
+  try {
+    const { paymentId, txid } = req.body;
+    if (!paymentId) return res.status(400).json({ error: "Missing paymentId" });
+
+    // جلب تفاصيل الدفعة من Pi
+    const paymentInfo = await fetch(`${PI_API_URL}/payments/${paymentId}`, {
+      method: "GET",
+      headers: { Authorization: `Key ${PI_API_KEY}` }
+    });
+
+    if (!paymentInfo.ok) throw new Error(await paymentInfo.text());
+    const paymentData = await paymentInfo.json();
+
+    const userUid = paymentData.metadata?.userUid;
+    const amount  = paymentData.amount;
+    const type    = paymentData.metadata?.type;
+
+    // تحقق أنها فعلاً دفعة سحب
+    if (type !== "payout") {
+      return res.status(400).json({ error: "Not a payout payment" });
+    }
+
+    if (!userUid) throw new Error("Missing userUid in metadata");
+
+    // إذا لم تكن معتمدة بعد → اعتمدها أولاً
+    if (!paymentData.status?.developer_approved) {
+      const approveRes = await fetch(`${PI_API_URL}/payments/${paymentId}/approve`, {
+        method: "POST",
+        headers: { Authorization: `Key ${PI_API_KEY}` }
+      });
+      if (!approveRes.ok) throw new Error(await approveRes.text());
+    }
+
+    // إذا لم تكن مكتملة ولدينا txid → أكملها
+    if (!paymentData.status?.developer_completed && txid) {
+      const completeRes = await fetch(`${PI_API_URL}/payments/${paymentId}/complete`, {
+        method: "POST",
+        headers: { Authorization: `Key ${PI_API_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ txid })
+      });
+      if (!completeRes.ok) throw new Error(await completeRes.text());
+    }
+
+    // تصفير الأرباح في Firestore
+    const booksSnap = await db.collection("books").where("ownerUid", "==", userUid).get();
+    const batch = db.batch();
+    booksSnap.forEach(doc => {
+      batch.update(doc.ref, { withdrawableEarnings: 0 });
+    });
+    await batch.commit();
+
+    // تسجيل السحب إن لم يُسجَّل من قبل
+    const payoutRef = db.collection("payouts").doc(paymentId);
+    const payoutDoc = await payoutRef.get();
+    if (!payoutDoc.exists) {
+      await payoutRef.set({
+        userUid,
+        amount: Number(amount),
+        txid: txid || paymentData.transaction?.txid || "",
+        paidAt: Date.now(),
+        resolvedFromIncomplete: true
+      });
+      await db.doc("stats/platform").set({
+        totalPayouts: admin.firestore.FieldValue.increment(Number(amount))
+      }, { merge: true });
+    }
+
+    // حذف القفل والدفعة المعلقة
+    await db.collection("pendingPayouts").doc(paymentId).delete().catch(() => {});
+    await db.collection("payoutLocks").doc(userUid).delete().catch(() => {});
+
+    res.json({ success: true, txid: txid || paymentData.transaction?.txid, amount });
+
+  } catch (err) {
+    console.error("Resolve incomplete payout error:", err);
     res.status(500).json({ error: err.message });
   }
 });
