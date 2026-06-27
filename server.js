@@ -1066,7 +1066,10 @@ app.post("/save-wallet", async (req, res) => {
   try {
 
     const { userUid, walletAddress, accessToken } = req.body;
-
+console.log("========== SAVE WALLET ==========");
+console.log("userUid:", userUid);
+console.log("walletAddress:", walletAddress);
+console.log("accessToken exists:", !!accessToken);
     if (!accessToken) {
   return res.status(401).json({
     error: "Missing access token"
@@ -1076,6 +1079,7 @@ app.post("/save-wallet", async (req, res) => {
 const piUser = await verifyPiUser(req, res);
 
 if (!piUser) return;
+    console.log("Pi user verified:", piUser.uid);
 console.log("===== SAVE WALLET =====");
 console.log(req.body);
 console.log(piUser);
@@ -1110,6 +1114,7 @@ await userRef.set(
   { walletAddress },
   { merge:true }
 );
+    console.log("Wallet saved to Firebase");
 console.log("Wallet saved successfully");
     res.json({ success: true });
 
