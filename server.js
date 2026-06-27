@@ -1168,22 +1168,30 @@ app.post("/request-payout", async (req, res) => {
       attempts++;
     }
 
-    // إذا لم يأتِ txid → ألغِ وأعد المحاولة لاحقاً
-    if (!txid) {
-      try {
-        await fetch(`${PI_API_URL}/payments/${paymentId}/cancel`, {
-          method: "POST",
-          headers: { Authorization: `Key ${PI_API_KEY}` }
-        });
-        console.log("Payment cancelled due to timeout");
-      } catch {}
+   // على Testnet: txid لا يأتي تلقائياً
+// نحفظ paymentId ونخبر المؤلف أن طلبه قيد المعالجة
+if (!txid) {
 
-      await payoutLockRef.delete();
-      return res.status(500).json({
-        error: "Payment timeout - please try again in a few minutes"
-      });
-    }
+  // احفظ الدفعة المعلقة في Firestore للمتابعة لاحقاً
+  await db.collection("pendingPayouts").doc(userUid).set({
+    paymentId,
+    amount,
+    userUid,
+    createdAt: Date.now(),
+    status: "pending_admin"
+  });
 
+  await payoutLockRef.delete();
+
+  // أرجع نجاح مع رسالة توضيحية
+  return res.json({
+    success: true,
+    txid: paymentId, // نستخدم paymentId مؤقتاً
+    amount: amount.toFixed(2),
+    pending: true,
+    message: "Payout request submitted - processing in progress"
+  });
+}
     // ===== الخطوة 3: أكمل الدفعة =====
     const completeRes = await fetch(
       `${PI_API_URL}/payments/${paymentId}/complete`,
