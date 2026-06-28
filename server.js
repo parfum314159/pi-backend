@@ -372,12 +372,10 @@ app.post("/request-payout", async (req,res) => {
       method:"POST",
       headers:{Authorization:`Key ${PI_API_KEY}`,"Content-Type":"application/json"},
       body:JSON.stringify({
-        payment:{
-          amount,
-          memo:"Spicy Library - Author Earnings Payout",
-          metadata:{type:"payout",userUid,username:piUser.username},
-          uid:userUid
-        }
+        amount,
+        memo:"Spicy Library - Author Earnings Payout",
+        metadata:{type:"payout",userUid,username:piUser.username},
+        uid:userUid
       })
     });
     if(!createRes.ok){
