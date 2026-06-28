@@ -374,8 +374,8 @@ app.post("/request-payout", async (req,res) => {
       body:JSON.stringify({
         amount,
         memo:"Spicy Library - Author Earnings Payout",
-        metadata:{type:"payout",userUid,username:piUser.username},
-        uid:userUid
+        metadata:{type:"payout",userUid:piUser.uid,username:piUser.username},
+        uid:piUser.uid   // ← دائماً من /v2/me وليس من req.body
       })
     });
     if(!createRes.ok){
