@@ -384,20 +384,17 @@ app.post("/request-payout", async (req,res) => {
       const e=await createRes.text();
       throw new Error("Create payment failed: "+e);
     }
-    const createData=await createRes.json();
-    console.log(createData);
-    paymentId=createData.identifier;
-    if(!paymentId) throw new Error("No paymentId returned from Pi");
+   const createData = await createRes.json();
+console.log(createData);
+paymentId = createData.identifier;
 
-    /* 5. تحديد عنوان محفظة المستقبِل
-     *    الأولوية: walletAddress المُرسَل من الواجهة (من Pi.authenticate wallet_address scope)
-     *    إذا لم يكن متاحاً: نحمّله من Pi blockchain عبر Stellar
-     *    (Pi لا يُرجع recipientAddress في response الإنشاء — يجب تحميله من Blockchain)
-     */
-    const recipientAddress = createData.recipient_address;
-    if (!recipientAddress) {
-  throw new Error("Pi API did not return recipient address.");
-}
+if (!paymentId)
+    throw new Error("No paymentId returned from Pi");
+
+const recipientAddress = createData.recipient;
+
+if (!recipientAddress)
+    throw new Error("No recipient returned from Pi");
 
     /* 6. تحميل حساب التطبيق من Stellar Testnet */
     const sourceAccount = await horizonServer.loadAccount(APP_KEYPAIR.publicKey());
