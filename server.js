@@ -394,7 +394,7 @@ app.post("/request-payout", async (req,res) => {
      *    إذا لم يكن متاحاً: نحمّله من Pi blockchain عبر Stellar
      *    (Pi لا يُرجع recipientAddress في response الإنشاء — يجب تحميله من Blockchain)
      */
-    const recipientAddress = createData.recipient;
+    const recipientAddress = createData.recipient_address;
     if (!recipientAddress) {
   throw new Error("Pi API did not return recipient address.");
 }
