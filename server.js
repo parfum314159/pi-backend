@@ -385,6 +385,7 @@ app.post("/request-payout", async (req,res) => {
       throw new Error("Create payment failed: "+e);
     }
     const createData=await createRes.json();
+    console.log(createData);
     paymentId=createData.identifier;
     if(!paymentId) throw new Error("No paymentId returned from Pi");
 
@@ -393,22 +394,10 @@ app.post("/request-payout", async (req,res) => {
      *    إذا لم يكن متاحاً: نحمّله من Pi blockchain عبر Stellar
      *    (Pi لا يُرجع recipientAddress في response الإنشاء — يجب تحميله من Blockchain)
      */
-    let recipientAddress = walletAddress || null;
-
+    const recipientAddress = createData.recipient;
     if (!recipientAddress) {
-      /* تحميل عنوان المحفظة من Pi API */
-      const userRes = await fetch(`${PI_API_URL}/me`, {
-        headers: { Authorization: `Bearer ${accessToken}` }
-      });
-      if (userRes.ok) {
-        const userData = await userRes.json();
-        recipientAddress = userData.wallet_address || null;
-      }
-    }
-
-    if (!recipientAddress) {
-      throw new Error("Could not determine recipient wallet address. Please ensure wallet_address scope is authorized.");
-    }
+  throw new Error("Pi API did not return recipient address.");
+}
 
     /* 6. تحميل حساب التطبيق من Stellar Testnet */
     const sourceAccount = await horizonServer.loadAccount(APP_KEYPAIR.publicKey());
