@@ -24,12 +24,17 @@ const db = admin.firestore();
 const PI_API_KEY = process.env.PI_API_KEY;
 const PI_API_URL = "https://api.minepi.com/v2";
 
-/* ── Stellar (مطلوب لـ A2U) ── */
-const horizonServer = new StellarSdk.Horizon.Server("https://api.mainnet.minepi.com");
-const APP_KEYPAIR   = StellarSdk.Keypair.fromSecret(process.env.PI_WALLET_SECRET);
-const PI_NETWORK_PASSPHRASE = "Pi Network";   // ← mainnet
+/* ================================================================
+ *  Stellar — Testnet
+ *  horizonServer : Pi Testnet blockchain
+ *  APP_KEYPAIR   : مفتاح محفظة التطبيق (من متغير البيئة PI_WALLET_SECRET)
+ *  PI_NETWORK_PASSPHRASE : "Pi Testnet" للاختبار
+ * ================================================================ */
+const horizonServer       = new StellarSdk.Horizon.Server("https://api.testnet.minepi.com");
+const APP_KEYPAIR         = StellarSdk.Keypair.fromSecret(process.env.PI_WALLET_SECRET);
+const PI_NETWORK_PASSPHRASE = "Pi Testnet";   // ← testnet  (غيّره إلى "Pi Network" عند النشر الرسمي)
 
-/* ================= PI AUTH ================= */
+/* ================= PI AUTH MIDDLEWARE ================= */
 async function verifyPiUser(req, res) {
   const { accessToken, userUid } = req.body;
   if (!accessToken || !userUid) { res.status(400).json({ error: "Missing data" }); return null; }
@@ -43,7 +48,7 @@ async function verifyPiUser(req, res) {
 app.get("/", (_, res) => res.send("Backend running"));
 
 /* =============================================
- *  BOOKS ENDPOINTS — بدون أي تغيير
+ *  BOOKS ENDPOINTS
  * ============================================= */
 app.get("/books", async (_, res) => {
   try {
@@ -274,75 +279,72 @@ app.get("/pending-payments", async (req,res) => {
 });
 
 /* ================================================================
- *  PAYOUT — A2U الصحيح باستخدام Stellar SDK
+ *  PAYOUT — A2U الصحيح حسب توثيق Pi Network الرسمي
  *
- *  المنطق الوحيد الصحيح حسب التوثيق الرسمي لـ Pi Network:
- *  1. إلغاء أي دفعات A2U معلقة أولاً (مطلوب حتماً لأن Pi يسمح بدفعة واحدة فقط في وقت واحد)
- *  2. إنشاء الدفعة عبر Pi API  → نحصل على paymentId + recipientAddress
- *  3. بناء وتوقيع وإرسال المعاملة على بلوكشين Pi عبر Stellar SDK
- *  4. إكمال الدفعة عبر Pi API مع txid
- *  5. تصفير الأرباح وتسجيل السحب
+ *  الخطوات الصحيحة (من pi-sdk-integration-guide):
+ *  1. إلغاء الدفعات المعلقة أولاً (Pi يسمح بدفعة واحدة فقط في وقت واحد)
+ *  2. POST /v2/payments → يعيد paymentId  (لا يعيد recipientAddress مباشرة)
+ *  3. GET عنوان المحفظة من Pi blockchain عبر Stellar SDK
+ *     (يجب إعادة تحميله في كل مرة — قد تتغير المحفظة)
+ *  4. بناء المعاملة وإضافة paymentId كـ Memo (مطلوب!)
+ *  5. توقيع وإرسال المعاملة على البلوكشين → نحصل على txid
+ *  6. POST /v2/payments/{id}/complete مع txid
+ *  7. تصفير الأرباح في Firestore
+ *
+ *  ملاحظة Testnet:
+ *  - horizonServer = "https://api.testnet.minepi.com"
+ *  - networkPassphrase = "Pi Testnet"
+ *  - عند النشر الرسمي: غيّرهما إلى mainnet
  * ================================================================ */
 
-/* ── خطوة مساعدة: إلغاء كل الدفعات A2U المعلقة لهذا التطبيق ── */
+/* ── إلغاء الدفعات المعلقة (مطلوب قبل أي دفعة جديدة) ── */
 async function cancelAllIncompletePi() {
   try {
     const r = await fetch(`${PI_API_URL}/payments/incomplete_server_payments`, {
       headers: { Authorization: `Key ${PI_API_KEY}` }
     });
-    if (!r.ok) return;
+    if (!r.ok) { console.warn("Could not fetch incomplete payments:", r.status); return; }
     const data = await r.json();
     const payments = data.incomplete_server_payments || [];
     for (const p of payments) {
       try {
-        await fetch(`${PI_API_URL}/payments/${p.identifier}/cancel`, {
+        const cr = await fetch(`${PI_API_URL}/payments/${p.identifier}/cancel`, {
           method: "POST",
           headers: { Authorization: `Key ${PI_API_KEY}`, "Content-Type": "application/json" }
         });
-        console.log(`Cancelled incomplete payment: ${p.identifier}`);
-      } catch(e) { console.warn("Cancel failed:", e.message); }
+        console.log(`Cancelled ${p.identifier}:`, cr.status);
+        // امسح بيانات Firestore المرتبطة
+        if (p.metadata?.userUid) {
+          await db.collection("payoutLocks").doc(p.metadata.userUid).delete().catch(()=>{});
+          await db.collection("pendingPayouts").doc(p.identifier).delete().catch(()=>{});
+        }
+      } catch(e) { console.warn("Cancel failed for", p.identifier, e.message); }
     }
-  } catch(e) { console.warn("Could not fetch incomplete payments:", e.message); }
+  } catch(e) { console.warn("cancelAllIncompletePi error:", e.message); }
 }
 
-/* ── /cancel-incomplete-payouts  (يُستدعى من الواجهة عند بدء التطبيق) ── */
+/* ── /cancel-incomplete-payouts (يُستدعى من الواجهة عند بدء التطبيق) ── */
 app.post("/cancel-incomplete-payouts", async (req,res) => {
   const {userUid,accessToken}=req.body;
   if(!userUid||!accessToken) return res.status(400).json({error:"Missing data"});
   if(!await verifyPiUser(req,res)) return;
   try {
-    const r=await fetch(`${PI_API_URL}/payments/incomplete_server_payments`,{headers:{Authorization:`Key ${PI_API_KEY}`}});
-    if(!r.ok) return res.json({success:true,cancelled:0});
-    const data=await r.json();
-    const payments=data.incomplete_server_payments||[];
-    let cancelled=0;
-    for(const p of payments){
-      try{
-        await fetch(`${PI_API_URL}/payments/${p.identifier}/cancel`,{
-          method:"POST",headers:{Authorization:`Key ${PI_API_KEY}`,"Content-Type":"application/json"}
-        });
-        // امسح القفل إن وجد
-        if(p.metadata?.userUid){
-          await db.collection("payoutLocks").doc(p.metadata.userUid).delete().catch(()=>{});
-          await db.collection("pendingPayouts").doc(p.identifier).delete().catch(()=>{});
-        }
-        cancelled++;
-      }catch(e){ console.warn(e.message); }
-    }
-    // امسح قفل هذا المستخدم في كل الأحوال
+    await cancelAllIncompletePi();
+    // امسح قفل هذا المستخدم دائماً
     await db.collection("payoutLocks").doc(userUid).delete().catch(()=>{});
-    res.json({success:true,cancelled});
+    res.json({success:true});
   } catch(e){ res.status(500).json({success:false,error:e.message}); }
 });
 
-/* ── /request-payout  (السحب الكامل في طلب واحد) ── */
+/* ── /request-payout (السحب الكامل) ── */
 app.post("/request-payout", async (req,res) => {
-  const {userUid,accessToken}=req.body;
+  const {userUid,accessToken,walletAddress}=req.body;
   if(!userUid||!accessToken) return res.status(400).json({success:false,error:"Missing data"});
+
   const piUser=await verifyPiUser(req,res);
   if(!piUser) return;
 
-  /* 1. إلغاء المعلقات أولاً — شرط أساسي في Pi */
+  /* 1. إلغاء الدفعات المعلقة — شرط أساسي في Pi */
   await cancelAllIncompletePi();
 
   /* 2. قفل لمنع طلبين متزامنين */
@@ -357,57 +359,124 @@ app.post("/request-payout", async (req,res) => {
   const booksSnap=await db.collection("books").where("ownerUid","==",userUid).get();
   let total=0;
   booksSnap.forEach(d=>{ total+=Number(d.data().withdrawableEarnings||0); });
-  if(total<5){ await lockRef.delete(); return res.status(400).json({success:false,error:"Minimum payout is 5 Pi"}); }
+  if(total<5){
+    await lockRef.delete();
+    return res.status(400).json({success:false,error:"Minimum payout is 5 Pi"});
+  }
   const amount=parseFloat(total.toFixed(7));
 
   let paymentId=null;
   try {
-    /* 4. إنشاء دفعة A2U في Pi */
+    /* 4. إنشاء دفعة A2U في Pi API */
     const createRes=await fetch(`${PI_API_URL}/payments`,{
       method:"POST",
       headers:{Authorization:`Key ${PI_API_KEY}`,"Content-Type":"application/json"},
-      body:JSON.stringify({payment:{amount,memo:"Spicy Library - Author Earnings Payout",metadata:{type:"payout",userUid,username:piUser.username},uid:userUid}})
+      body:JSON.stringify({
+        payment:{
+          amount,
+          memo:"Spicy Library - Author Earnings Payout",
+          metadata:{type:"payout",userUid,username:piUser.username},
+          uid:userUid
+        }
+      })
     });
-    if(!createRes.ok){ const e=await createRes.text(); throw new Error("Create payment failed: "+e); }
+    if(!createRes.ok){
+      const e=await createRes.text();
+      throw new Error("Create payment failed: "+e);
+    }
     const createData=await createRes.json();
     paymentId=createData.identifier;
-    const recipientAddress=createData.recipient;  // ← عنوان محفظة المستخدم من Pi مباشرة
+    if(!paymentId) throw new Error("No paymentId returned from Pi");
 
-    if(!paymentId||!recipientAddress) throw new Error("No paymentId or recipient from Pi");
+    /* 5. تحديد عنوان محفظة المستقبِل
+     *    الأولوية: walletAddress المُرسَل من الواجهة (من Pi.authenticate wallet_address scope)
+     *    إذا لم يكن متاحاً: نحمّله من Pi blockchain عبر Stellar
+     *    (Pi لا يُرجع recipientAddress في response الإنشاء — يجب تحميله من Blockchain)
+     */
+    let recipientAddress = walletAddress || null;
 
-    /* 5. بناء وإرسال معاملة Stellar (المطلوب لـ A2U) */
-    const sourceAccount=await horizonServer.loadAccount(APP_KEYPAIR.publicKey());
-    const baseFee=await horizonServer.fetchBaseFee();
-    const tx=new StellarSdk.TransactionBuilder(sourceAccount,{fee:baseFee,networkPassphrase:PI_NETWORK_PASSPHRASE})
-      .addOperation(StellarSdk.Operation.payment({destination:recipientAddress,asset:StellarSdk.Asset.native(),amount:amount.toFixed(7)}))
-      .addMemo(StellarSdk.Memo.text("Spicy Library Payout"))
-      .setTimeout(180)
-      .build();
+    if (!recipientAddress) {
+      /* تحميل عنوان المحفظة من Pi API */
+      const userRes = await fetch(`${PI_API_URL}/me`, {
+        headers: { Authorization: `Bearer ${accessToken}` }
+      });
+      if (userRes.ok) {
+        const userData = await userRes.json();
+        recipientAddress = userData.wallet_address || null;
+      }
+    }
+
+    if (!recipientAddress) {
+      throw new Error("Could not determine recipient wallet address. Please ensure wallet_address scope is authorized.");
+    }
+
+    /* 6. تحميل حساب التطبيق من Stellar Testnet */
+    const sourceAccount = await horizonServer.loadAccount(APP_KEYPAIR.publicKey());
+    const baseFee = await horizonServer.fetchBaseFee();
+
+    /* 7. بناء المعاملة
+     *    IMPORTANT: paymentId يجب أن يكون الـ Memo (متطلب رسمي من Pi)
+     */
+    const timebounds = await horizonServer.fetchTimebounds(180);
+    const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
+      fee: baseFee,
+      networkPassphrase: PI_NETWORK_PASSPHRASE,
+      timebounds: timebounds
+    })
+    .addOperation(StellarSdk.Operation.payment({
+      destination: recipientAddress,
+      asset: StellarSdk.Asset.native(),
+      amount: amount.toFixed(7)
+    }))
+    .addMemo(StellarSdk.Memo.text(paymentId))   // ← paymentId كـ Memo (مطلوب رسمياً!)
+    .build();
+
+    /* 8. توقيع المعاملة بمفتاح التطبيق */
     tx.sign(APP_KEYPAIR);
-    const txResult=await horizonServer.submitTransaction(tx);
-    const txid=txResult.hash;
 
-    /* 6. إكمال الدفعة في Pi */
-    const completeRes=await fetch(`${PI_API_URL}/payments/${paymentId}/complete`,{
+    /* 9. إرسال المعاملة على Pi Testnet Blockchain */
+    const txResult = await horizonServer.submitTransaction(tx);
+    const txid = txResult.id || txResult.hash;
+    if (!txid) throw new Error("Transaction submitted but no txid returned");
+
+    /* 10. إكمال الدفعة في Pi API */
+    const completeRes = await fetch(`${PI_API_URL}/payments/${paymentId}/complete`, {
       method:"POST",
       headers:{Authorization:`Key ${PI_API_KEY}`,"Content-Type":"application/json"},
       body:JSON.stringify({txid})
     });
-    if(!completeRes.ok){ console.warn("Complete warning:", await completeRes.text()); }
+    if(!completeRes.ok){
+      // نُسجّل التحذير لكن لا نفشل — الأموال وصلت على البلوكشين
+      console.warn("Complete endpoint warning:", await completeRes.text());
+    }
 
-    /* 7. تصفير الأرباح وتسجيل السحب */
+    /* 11. تصفير الأرباح وتسجيل السحب */
     const batch=db.batch();
     booksSnap.forEach(d=>batch.update(d.ref,{withdrawableEarnings:0}));
     await batch.commit();
-    await db.collection("payouts").add({userUid,amount,txid,paidAt:Date.now()});
-    await db.doc("stats/platform").set({totalPayouts:admin.firestore.FieldValue.increment(amount)},{merge:true});
+
+    await db.collection("payouts").add({userUid,amount,txid,paymentId,paidAt:Date.now()});
+    await db.doc("stats/platform").set(
+      {totalPayouts:admin.firestore.FieldValue.increment(amount)},
+      {merge:true}
+    );
     await lockRef.delete().catch(()=>{});
 
     return res.json({success:true,txid,amount});
 
   } catch(err){
-    console.error("Payout error:",err.message);
+    console.error("Payout error:", err.message);
+    // مسح القفل دائماً عند الخطأ
     await lockRef.delete().catch(()=>{});
+    // إذا أنشأنا الدفعة لكن فشل الإرسال → نلغيها
+    if(paymentId){
+      try{
+        await fetch(`${PI_API_URL}/payments/${paymentId}/cancel`,{
+          method:"POST",
+          headers:{Authorization:`Key ${PI_API_KEY}`,"Content-Type":"application/json"}
+        });
+      }catch(ce){ console.warn("Cancel on error failed:", ce.message); }
+    }
     return res.status(500).json({success:false,error:err.message});
   }
 });
