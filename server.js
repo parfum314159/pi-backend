@@ -25,13 +25,9 @@ const PI_API_KEY = process.env.PI_API_KEY;
 const PI_API_URL = "https://api.minepi.com/v2";
 
 /* ── Stellar (مطلوب لـ A2U) ── */
-// Testnet: PI_TESTNET=true في Render — Mainnet: PI_TESTNET=false
-const IS_TESTNET = process.env.PI_TESTNET === "true";
-const horizonServer = new StellarSdk.Horizon.Server(
-  IS_TESTNET ? "https://api.testnet.minepi.com" : "https://api.mainnet.minepi.com"
-);
+const horizonServer = new StellarSdk.Horizon.Server("https://api.mainnet.minepi.com");
 const APP_KEYPAIR   = StellarSdk.Keypair.fromSecret(process.env.PI_WALLET_SECRET);
-const PI_NETWORK_PASSPHRASE = IS_TESTNET ? "Pi Testnet" : "Pi Network";
+const PI_NETWORK_PASSPHRASE = "Pi Network";   // ← mainnet
 
 /* ================= PI AUTH ================= */
 async function verifyPiUser(req, res) {
