@@ -269,7 +269,10 @@ app.get("/pending-payments", async (req,res) => {
   } catch(e){ res.status(500).json({success:false,error:e.message}); }
 });
 
-import PiNetwork from 'pi-backend';
+// ✅ صحيح
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const PiNetwork = require('pi-backend');
 
 // تهيئة SDK مرة واحدة عند بدء السيرفر
 const pi = new PiNetwork(process.env.PI_API_KEY, process.env.PI_WALLET_SECRET);
