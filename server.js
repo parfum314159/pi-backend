@@ -4,9 +4,10 @@ import fetch from "node-fetch";
 import cors from "cors";
 import cloudinary from 'cloudinary';
 import { createRequire } from 'module';
+
 const require = createRequire(import.meta.url);
 const PiNetwork = require('pi-backend');
-const pi = new PiNetwork(process.env.PI_API_KEY, process.env.PI_WALLET_SECRET);
+const piSDK = new PiNetwork(process.env.PI_API_KEY, process.env.PI_WALLET_SECRET);
 
 cloudinary.v2.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -26,7 +27,6 @@ const db = admin.firestore();
 
 const PI_API_KEY = process.env.PI_API_KEY;
 const PI_API_URL = "https://api.minepi.com/v2";
-
 
 /* ================= PI AUTH MIDDLEWARE ================= */
 async function verifyPiUser(req, res) {
@@ -183,8 +183,8 @@ app.post("/approve-payment", async (req,res) => {
   const {paymentId}=req.body;
   if(!paymentId) return res.status(400).json({error:"missing paymentId"});
   try {
-    const pi=await(await fetch(`${PI_API_URL}/payments/${paymentId}`,{headers:{Authorization:`Key ${PI_API_KEY}`}})).json();
-    const {bookId,userUid}=pi.metadata||{};
+    const paymentData=await(await fetch(`${PI_API_URL}/payments/${paymentId}`,{headers:{Authorization:`Key ${PI_API_KEY}`}})).json();
+    const {bookId,userUid}=paymentData.metadata||{};
     if(!bookId||!userUid) throw new Error("Missing metadata");
     if((await db.collection("purchases").doc(userUid).collection("books").doc(bookId).get()).exists)
       return res.status(400).json({error:"Already purchased"});
@@ -199,8 +199,8 @@ app.post("/complete-payment", async (req,res) => {
   const {paymentId,txid}=req.body;
   if(!paymentId||!txid) return res.status(400).json({error:"missing data"});
   try {
-    const pi=await(await fetch(`${PI_API_URL}/payments/${paymentId}`,{headers:{Authorization:`Key ${PI_API_KEY}`,"Content-Type":"application/json"}})).json();
-    const {bookId,userUid}=pi.metadata||{};
+    const paymentData=await(await fetch(`${PI_API_URL}/payments/${paymentId}`,{headers:{Authorization:`Key ${PI_API_KEY}`,"Content-Type":"application/json"}})).json();
+    const {bookId,userUid}=paymentData.metadata||{};
     if(!bookId||!userUid) throw new Error("Missing metadata");
     const r=await fetch(`${PI_API_URL}/payments/${paymentId}/complete`,{method:"POST",headers:{Authorization:`Key ${PI_API_KEY}`,"Content-Type":"application/json"},body:JSON.stringify({txid})});
     if(!r.ok) throw new Error(await r.text());
@@ -272,15 +272,16 @@ app.get("/pending-payments", async (req,res) => {
   } catch(e){ res.status(500).json({success:false,error:e.message}); }
 });
 
-
-
+/* ================================================================
+ *  PAYOUT — A2U
+ * ================================================================ */
 
 /* ── إلغاء الدفعات المعلقة ── */
 async function cancelAllIncompletePi() {
   try {
-    const payments = await pi.getIncompleteServerPayments();
+    const payments = await piSDK.getIncompleteServerPayments();
     for (const p of payments) {
-      await pi.cancelPayment(p.identifier);
+      await piSDK.cancelPayment(p.identifier);
       console.log(`Cancelled: ${p.identifier}`);
       if (p.metadata?.userUid) {
         await db.collection("payoutLocks").doc(p.metadata.userUid).delete().catch(()=>{});
@@ -332,19 +333,19 @@ app.post("/request-payout", async (req,res) => {
 
   let paymentId = null;
   try {
-    // 4. إنشاء الدفعة — يعيد paymentId مباشرةً
-    paymentId = await pi.createPayment({
+    // 4. إنشاء الدفعة
+    paymentId = await piSDK.createPayment({
       amount,
       memo: "Spicy Library - Author Earnings Payout",
       metadata: { type:"payout", userUid:piUser.uid, username:piUser.username },
-      uid: piUser.uid   // ← app-specific UID من /v2/me
+      uid: piUser.uid
     });
 
-    // 5. إرسال المعاملة على البلوكشين — يعيد txid تلقائياً
-    const txid = await pi.submitPayment(paymentId);
+    // 5. إرسال المعاملة على البلوكشين
+    const txid = await piSDK.submitPayment(paymentId);
 
-    // 6. إكمال الدفعة في Pi API
-    const completedPayment = await pi.completePayment(paymentId, txid);
+    // 6. إكمال الدفعة
+    const completedPayment = await piSDK.completePayment(paymentId, txid);
     console.log("Payout completed:", completedPayment.status);
 
     // 7. تصفير الأرباح في Firestore
@@ -365,7 +366,7 @@ app.post("/request-payout", async (req,res) => {
     console.error("Payout error:", err.message);
     await lockRef.delete().catch(()=>{});
     if(paymentId){
-      try { await pi.cancelPayment(paymentId); } catch(ce){ console.warn("Cancel failed:", ce.message); }
+      try { await piSDK.cancelPayment(paymentId); } catch(ce){ console.warn("Cancel failed:", ce.message); }
     }
     return res.status(500).json({success:false, error:err.message});
   }
