@@ -6,7 +6,7 @@ import cloudinary from 'cloudinary';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
-const PiNetwork = require('pi-backend');
+const PiNetwork = require('pi-backend').default;
 const piSDK = new PiNetwork(process.env.PI_API_KEY, process.env.PI_WALLET_SECRET);
 
 cloudinary.v2.config({
