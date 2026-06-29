@@ -3,7 +3,10 @@ import admin from "firebase-admin";
 import fetch from "node-fetch";
 import cors from "cors";
 import cloudinary from 'cloudinary';
-
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const PiNetwork = require('pi-backend');
+const pi = new PiNetwork(process.env.PI_API_KEY, process.env.PI_WALLET_SECRET);
 
 cloudinary.v2.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -269,13 +272,8 @@ app.get("/pending-payments", async (req,res) => {
   } catch(e){ res.status(500).json({success:false,error:e.message}); }
 });
 
-// ✅ صحيح
-import { createRequire } from 'module';
-const require = createRequire(import.meta.url);
-const PiNetwork = require('pi-backend');
 
-// تهيئة SDK مرة واحدة عند بدء السيرفر
-const pi = new PiNetwork(process.env.PI_API_KEY, process.env.PI_WALLET_SECRET);
+
 
 /* ── إلغاء الدفعات المعلقة ── */
 async function cancelAllIncompletePi() {
