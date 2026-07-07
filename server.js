@@ -135,7 +135,71 @@ app.post("/save-book", async (req,res) => {
       approved:false,reviewed:false,reviewMessage:"",createdAt:Date.now()
     });
     await db.doc("stats/platform").set({totalBooks:admin.firestore.FieldValue.increment(1)},{merge:true});
-    res.json({success:true,bookId:doc.id});
+   res.json({success:true,bookId:doc.id});
+  } catch(e){ res.status(500).json({error:e.message}); }
+});
+
+/* ================= EDIT / DELETE BOOK ================= */
+app.post("/edit-book", async (req,res) => {
+  try {
+    const {bookId,userUid,accessToken,title,price,description,language,pageCount}=req.body;
+    if(!bookId||!userUid||!accessToken) return res.status(400).json({error:"Missing data"});
+    if(!await verifyPiUser(req,res)) return;
+    const bookRef=db.collection("books").doc(bookId);
+    const book=await bookRef.get();
+    if(!book.exists) return res.status(404).json({error:"Book not found"});
+    if(book.data().ownerUid!==userUid) return res.status(403).json({error:"Not your book"});
+    const updates={};
+    if(title) updates.title=sanitizeText(title).substring(0,200);
+    if(description) updates.description=sanitizeText(description).substring(0,2000);
+    if(language) updates.language=language;
+    if(pageCount) updates.pageCount=pageCount;
+    if(price!==undefined){
+      const p=Number(price);
+      if(isNaN(p)||p<0.0000001) return res.status(400).json({error:"Invalid price"});
+      updates.price=p;
+    }
+    await bookRef.update(updates);
+    res.json({success:true});
+  } catch(e){ res.status(500).json({error:e.message}); }
+});
+
+function extractCloudinaryPublicId(url){
+  try{
+    const parts=url.split("/upload/");
+    if(parts.length<2) return null;
+    let path=parts[1];
+    path=path.replace(/^v\d+\//,"");
+    path=path.replace(/\.[a-zA-Z0-9]+$/,"");
+    return path;
+  }catch{ return null; }
+}
+
+app.post("/delete-book", async (req,res) => {
+  try {
+    const {bookId,userUid,accessToken}=req.body;
+    if(!bookId||!userUid||!accessToken) return res.status(400).json({error:"Missing data"});
+    if(!await verifyPiUser(req,res)) return;
+    const bookRef=db.collection("books").doc(bookId);
+    const book=await bookRef.get();
+    if(!book.exists) return res.status(404).json({error:"Book not found"});
+    const bookData=book.data();
+    if(bookData.ownerUid!==userUid) return res.status(403).json({error:"Not your book"});
+
+    const coverPublicId=extractCloudinaryPublicId(bookData.cover||"");
+    const pdfPublicId=extractCloudinaryPublicId(bookData.pdf||"");
+
+    if(coverPublicId){
+      try{ await cloudinary.v2.uploader.destroy(coverPublicId,{resource_type:"image"}); }
+      catch(e){ console.warn("Cover delete failed:",e.message); }
+    }
+    if(pdfPublicId){
+      try{ await cloudinary.v2.uploader.destroy(pdfPublicId,{resource_type:"raw"}); }
+      catch(e){ console.warn("PDF delete failed:",e.message); }
+    }
+
+    await bookRef.delete();
+    res.json({success:true});
   } catch(e){ res.status(500).json({error:e.message}); }
 });
 
